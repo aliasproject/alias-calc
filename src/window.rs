@@ -142,6 +142,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         configured: false,
         drawn: false,
         keyboard_seat: None,
+        pointer_seat: None,
         dirty: false,
         exit: false,
     };
@@ -161,8 +162,12 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
         }
         if app.dirty && app.configured {
             app.draw();
-            if let Some(seat) = app.keyboard_seat.take() {
-                app.bind_keyboard(&queue.handle(), &seat);
+            if app.keyboard_seat.is_some() || app.pointer_seat.is_some() {
+                // Send the first frame on its own: a new keyboard makes the
+                // compositor build and send a keymap, and that shouldn't
+                // hold up mapping the window.
+                let _ = queue.flush();
+                app.bind_input(&queue.handle());
             }
         }
         match queue.flush() {
@@ -247,8 +252,9 @@ struct App {
     configured: bool,
     /// A frame has been committed.
     drawn: bool,
-    /// A seat whose keyboard waits for the first frame.
+    /// Seats whose keyboard and pointer wait for the first frame.
     keyboard_seat: Option<wl_seat::WlSeat>,
+    pointer_seat: Option<wl_seat::WlSeat>,
     /// Something changed since the last frame.
     dirty: bool,
     exit: bool,
@@ -266,6 +272,29 @@ impl App {
         match self.seats.get_keyboard(qh, seat, None) {
             Ok(keyboard) => self.keyboard = Some(keyboard),
             Err(err) => eprintln!("alias-calc: no keyboard: {err}"),
+        }
+    }
+
+    fn bind_pointer(&mut self, qh: &QueueHandle<Self>, seat: &wl_seat::WlSeat) {
+        match self.seats.get_pointer(qh, seat) {
+            Ok(pointer) => {
+                self.cursor = self
+                    .cursor_shape
+                    .as_ref()
+                    .map(|m| m.get_shape_device(&pointer, qh));
+                self.pointer = Some(pointer);
+            }
+            Err(err) => eprintln!("alias-calc: no pointer: {err}"),
+        }
+    }
+
+    /// Binds the keyboard and pointer held back for the first frame.
+    fn bind_input(&mut self, qh: &QueueHandle<Self>) {
+        if let Some(seat) = self.keyboard_seat.take() {
+            self.bind_keyboard(qh, &seat);
+        }
+        if let Some(seat) = self.pointer_seat.take() {
+            self.bind_pointer(qh, &seat);
         }
     }
 
@@ -480,8 +509,8 @@ impl SeatHandler for App {
     ) {
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             // Compiling the keymap takes ~1.5 ms, and the compositor sends it
-            // with the first configure. Nobody types in the first frame, so
-            // the keyboard is made right after it (see `event_loop`).
+            // with the first configure. Nobody types or clicks in the first
+            // frame, so input is bound right after it (see `event_loop`).
             if self.drawn {
                 self.bind_keyboard(qh, &seat);
             } else {
@@ -489,15 +518,10 @@ impl SeatHandler for App {
             }
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
-            match self.seats.get_pointer(qh, &seat) {
-                Ok(pointer) => {
-                    self.cursor = self
-                        .cursor_shape
-                        .as_ref()
-                        .map(|m| m.get_shape_device(&pointer, qh));
-                    self.pointer = Some(pointer);
-                }
-                Err(err) => eprintln!("alias-calc: no pointer: {err}"),
+            if self.drawn {
+                self.bind_pointer(qh, &seat);
+            } else {
+                self.pointer_seat = Some(seat);
             }
         }
     }
@@ -511,6 +535,9 @@ impl SeatHandler for App {
     ) {
         if capability == Capability::Keyboard {
             self.keyboard_seat = None;
+        }
+        if capability == Capability::Pointer {
+            self.pointer_seat = None;
         }
         if capability == Capability::Keyboard
             && let Some(keyboard) = self.keyboard.take()
