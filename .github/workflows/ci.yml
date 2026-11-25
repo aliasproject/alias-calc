@@ -57,6 +57,10 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - run: cargo build --release --locked
+      # The renderer's frame budget: only meaningful optimised, so it's
+      # ignored in the debug test run.
+      - name: Performance budgets
+        run: cargo test --release --locked -- --ignored budget_
       - name: Benchmark scripts parse
         run: |
           python3 -m py_compile bench/calcbench.py
