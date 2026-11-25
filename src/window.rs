@@ -578,8 +578,8 @@ impl App {
             self.access = Access::start();
             if let Some(access) = &mut self.access {
                 access.window_focused(self.keyboard_focused);
+                trace::mark("screen reader bridge started");
             }
-            trace::mark("screen reader bridge started");
         }
     }
 
@@ -1145,6 +1145,10 @@ impl PointerHandler for App {
                     // focused (the drawn focus) stays on the key.
                     if let Some(cell) = self.mouse_down {
                         self.focus = Some(cell);
+                        if self.access.is_some() && !self.focus_visible {
+                            self.focus_visible = true;
+                            self.dirty = true;
+                        }
                     }
                     if self.focus_visible && self.access.is_none() {
                         self.focus_visible = false;

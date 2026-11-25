@@ -279,8 +279,9 @@ unsafe fn tree(state: &State) -> TreeUpdate {
     nodes.push((RESULT, result));
 
     // A status message (WCAG 4.1.3): read when it appears, silent when it
-    // empties again.
-    let mut status = Node::new(Role::Status);
+    // empties again. A Label, like the others: AccessKit announces a live
+    // node's name, and only a Label's name comes from its value.
+    let mut status = Node::new(Role::Label);
     // SAFETY: the caller's promise.
     status.set_value(unsafe { state.status.get() });
     status.set_live(Live::Polite);
@@ -378,6 +379,8 @@ mod tests {
         assert_eq!(window.label(), Some("Calculator"));
         assert_eq!(window.children().len(), 6);
         let (_, status) = update.nodes.iter().find(|(id, _)| *id == STATUS).unwrap();
+        // Announced by name, which only a Label takes from its value.
+        assert_eq!(status.role(), Role::Label);
         assert_eq!(status.value(), Some("Copied"));
         assert_eq!(status.live(), Some(Live::Polite));
     }

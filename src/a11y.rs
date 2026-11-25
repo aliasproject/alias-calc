@@ -321,7 +321,8 @@ impl Access {
 /// equals", "−5" is "minus 5"). Digits and separators pass through.
 pub fn spoken(text: &str) -> String {
     let mut out = String::with_capacity(text.len() * 2);
-    for c in text.chars() {
+    let words: Vec<String> = text.split(' ').map(exponent_in_words).collect();
+    for c in words.join(" ").chars() {
         let word = match c {
             '+' => "plus",
             '−' | '-' => "minus",
@@ -340,6 +341,33 @@ pub fn spoken(text: &str) -> String {
         out.push(' ');
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The engine's exponent form as words: `1.5e+20` is "1.5 times 10 to the
+/// power of 20", `1e-05` is "1 times 10 to the power of minus 5". Anything
+/// else is returned as it is.
+fn exponent_in_words(word: &str) -> String {
+    let Some((mantissa, exponent)) = word.split_once('e') else {
+        return word.to_string();
+    };
+    let (sign, digits) = match exponent.as_bytes().first() {
+        Some(b'-') => ("minus ", &exponent[1..]),
+        Some(b'+') => ("", &exponent[1..]),
+        _ => ("", exponent),
+    };
+    let number = |t: &str| {
+        !t.is_empty()
+            && t.bytes()
+                .all(|b| b.is_ascii_digit() || b == b'.' || b == b',')
+    };
+    let mantissa_digits = mantissa.trim_start_matches(['-', '−']);
+    if !number(mantissa_digits) || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return word.to_string();
+    }
+    let digits = digits.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    format!("{mantissa} times 10 to the power of {sign}{digits}")
 }
 
 /// The key a button index (reading order) is.
@@ -414,6 +442,17 @@ mod tests {
         assert_eq!(spoken("-1,234.5"), "minus 1,234.5");
         assert_eq!(spoken("2 ^ 8 + 50%"), "2 to the power of 8 plus 50 percent");
         assert_eq!(spoken("Error"), "Error");
+        // The engine's exponent form, for very large and small results.
+        assert_eq!(spoken("1e-05"), "1 times 10 to the power of minus 5");
+        assert_eq!(spoken("1.5e+20"), "1.5 times 10 to the power of 20");
+        assert_eq!(
+            spoken("−2.5e+100"),
+            "minus 2.5 times 10 to the power of 100"
+        );
+        assert_eq!(
+            spoken("1e-05 × 3 ="),
+            "1 times 10 to the power of minus 5 times 3 equals"
+        );
         assert_eq!(spoken(""), "");
     }
 
