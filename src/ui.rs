@@ -97,7 +97,17 @@ pub struct Palette {
     pub key_pressed: Color,
     /// The label on the accent-filled `=` key.
     pub on_accent: Color,
+    /// The 1 px outline every key has, 3:1 against the background (WCAG
+    /// 1.4.11: a control's boundary). The = key's accent fill usually is its
+    /// own boundary; `equals_border` is set only when it isn't.
+    pub border: Color,
+    pub equals_border: Option<Color>,
+    /// The keyboard focus ring: 3:1 against the background it's drawn on.
+    pub focus: Color,
 }
+
+/// WCAG 2.2 AA for non-text: control boundaries and focus indicators.
+const NON_TEXT_CONTRAST: f32 = 3.0;
 
 /// WCAG 2.2 AA for text: 4.5:1. Large text (24 px and up) only needs 3:1,
 /// but nothing here is large at every size: the result shrinks to fit a long
@@ -181,6 +191,20 @@ impl Palette {
             key,
             key_pressed,
             on_accent,
+            border: readable(
+                background.mix(foreground, 0.35),
+                &[background],
+                NON_TEXT_CONTRAST,
+            ),
+            equals_border: (contrast(accent, background) < NON_TEXT_CONTRAST).then(|| {
+                readable(
+                    background.mix(foreground, 0.35),
+                    &[background],
+                    NON_TEXT_CONTRAST,
+                )
+            }),
+            // The digits' colour already has 4.5:1 on the background.
+            focus: labels.foreground,
         }
     }
 }
@@ -283,6 +307,10 @@ pub struct View<'a> {
     /// made readable) in place of
     /// the expression line.
     pub notice: Option<&'a str>,
+    /// The key with keyboard focus, when the focus ring should show.
+    pub focus: Option<(usize, usize)>,
+    /// The aliasOS text size as a factor of the default (1.0 = 12 px).
+    pub text_scale: f32,
 }
 
 // Logical sizes.
@@ -294,6 +322,10 @@ const DISPLAY_SIZE: f32 = 60.0;
 const KEY_SIZE: f32 = 24.0;
 const EXPRESSION_MIN_SIZE: f32 = 13.0;
 const DISPLAY_MIN_SIZE: f32 = 16.0;
+/// Focus ring: its width and its gap from the key, inside the 6 px between
+/// keys.
+const FOCUS_WIDTH: f32 = 2.0;
+const FOCUS_OFFSET: f32 = 2.0;
 /// The share of the height above the keypad.
 const DISPLAY_SHARE: f32 = 0.3;
 
@@ -308,8 +340,9 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(fonts: &Fonts, width: f32, height: f32) -> Self {
-        let display_height = (height * DISPLAY_SHARE).max(EXPRESSION_SIZE + DISPLAY_SIZE);
+    fn new(fonts: &Fonts, width: f32, height: f32, text_scale: f32) -> Self {
+        let display_height =
+            (height * DISPLAY_SHARE).max((EXPRESSION_SIZE + DISPLAY_SIZE) * text_scale);
         let grid_top = PADDING + display_height;
         let rows = KEYS.len() as f32;
         let cols = KEYS[0].len() as f32;
@@ -317,12 +350,12 @@ impl Layout {
         let key_h = ((height - grid_top - PADDING - (rows - 1.0) * GAP) / rows).max(1.0);
         let display_baseline = grid_top - GAP - 4.0;
         let expression_baseline = display_baseline
-            - fonts.digit_height(Face::Light, DISPLAY_SIZE)
-            - EXPRESSION_SIZE * 0.6;
+            - fonts.digit_height(Face::Light, DISPLAY_SIZE * text_scale)
+            - EXPRESSION_SIZE * text_scale * 0.6;
         Self {
             grid: (PADDING, grid_top),
             key: (key_w, key_h),
-            expression_baseline: expression_baseline.max(PADDING + EXPRESSION_SIZE),
+            expression_baseline: expression_baseline.max(PADDING + EXPRESSION_SIZE * text_scale),
             display_baseline,
         }
     }
@@ -358,8 +391,10 @@ pub fn draw(
     (width, height): (f32, f32),
     scale: f32,
 ) {
-    let layout = Layout::new(fonts, width, height);
+    let layout = Layout::new(fonts, width, height, view.text_scale);
     let s = |v: f32| v * scale;
+    // Text sizes follow the aliasOS text size; spacing doesn't.
+    let t = |v: f32| v * scale * view.text_scale;
 
     canvas.fill(palette.background);
 
@@ -369,8 +404,8 @@ pub fn draw(
     if let Some(notice) = view.notice {
         let size = fonts.fit(
             Face::Regular,
-            s(EXPRESSION_SIZE),
-            s(EXPRESSION_MIN_SIZE),
+            t(EXPRESSION_SIZE),
+            t(EXPRESSION_MIN_SIZE),
             notice,
             max_text,
         );
@@ -387,8 +422,8 @@ pub fn draw(
     } else if !view.expression.is_empty() {
         let size = fonts.fit(
             Face::Regular,
-            s(EXPRESSION_SIZE),
-            s(EXPRESSION_MIN_SIZE),
+            t(EXPRESSION_SIZE),
+            t(EXPRESSION_MIN_SIZE),
             view.expression,
             max_text,
         );
@@ -410,8 +445,8 @@ pub fn draw(
     // still right, a clipped one isn't.
     let mut size = fonts.fit(
         Face::Light,
-        s(DISPLAY_SIZE),
-        s(DISPLAY_MIN_SIZE),
+        t(DISPLAY_SIZE),
+        t(DISPLAY_MIN_SIZE),
         view.display,
         max_text,
     );
@@ -457,12 +492,21 @@ pub fn draw(
                 }
             };
             let (px, py, pw, ph) = layout.key_pixels(row, col, scale);
-            canvas.rounded_rect(px, py, pw, ph, s(RADIUS), fill);
+            // The outline, then the fill inside it: at least one whole pixel.
+            let border = match role(label) {
+                Role::Equals => palette.equals_border,
+                _ => Some(palette.border),
+            };
+            let outline = border.map(|edge| (s(1.0).round().max(1.0), edge));
+            canvas.outlined_rect((px, py, pw, ph), s(RADIUS), fill, outline);
+            if view.focus == Some((row, col)) {
+                focus_ring(canvas, (px, py, pw, ph), scale, palette.focus);
+            }
 
             // JetBrains Mono draws × ÷ − + small next to its digits.
             let size = match role(label) {
-                Role::Operator | Role::Equals => s(KEY_SIZE) * 1.3,
-                _ => s(KEY_SIZE),
+                Role::Operator | Role::Equals => t(KEY_SIZE) * 1.3,
+                _ => t(KEY_SIZE),
             }
             .min(ph * 0.5);
             let tw = fonts.width(Face::Regular, size, label);
@@ -481,6 +525,59 @@ pub fn draw(
     }
 }
 
+/// A ring around a key, in the gap between keys: an outline, so focus never
+/// depends on colour alone.
+fn focus_ring(
+    canvas: &mut Canvas,
+    (px, py, pw, ph): (f32, f32, f32, f32),
+    scale: f32,
+    color: Color,
+) {
+    let gap = (FOCUS_OFFSET * scale).round();
+    let width = (FOCUS_WIDTH * scale).round().max(1.0);
+    let out = gap + width;
+    // Four edges, square-cornered like aliasOS windows, so the key inside
+    // is never painted over.
+    let (x0, y0, x1, y1) = (px - out, py - out, px + pw + out, py + ph + out);
+    canvas.rounded_rect(x0, y0, x1 - x0, width, width / 2.0, color);
+    canvas.rounded_rect(x0, y1 - width, x1 - x0, width, width / 2.0, color);
+    canvas.rounded_rect(x0, y0, width, y1 - y0, width / 2.0, color);
+    canvas.rounded_rect(x1 - width, y0, width, y1 - y0, width / 2.0, color);
+}
+
+/// Where keyboard focus goes from `from`. With no focus yet, every move
+/// lands on the first key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Move {
+    Next,
+    Previous,
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+pub fn move_focus(from: Option<(usize, usize)>, how: Move) -> (usize, usize) {
+    let (rows, cols) = (KEYS.len(), KEYS[0].len());
+    let Some((r, c)) = from else { return (0, 0) };
+    match how {
+        // Tab order is reading order, wrapping at the end.
+        Move::Next => {
+            let i = (r * cols + c + 1) % (rows * cols);
+            (i / cols, i % cols)
+        }
+        Move::Previous => {
+            let i = (r * cols + c + rows * cols - 1) % (rows * cols);
+            (i / cols, i % cols)
+        }
+        // Arrows stop at the edges.
+        Move::Up => (r.saturating_sub(1), c),
+        Move::Down => ((r + 1).min(rows - 1), c),
+        Move::Left => (r, c.saturating_sub(1)),
+        Move::Right => (r, (c + 1).min(cols - 1)),
+    }
+}
+
 /// The key at logical position (x, y), as (row, column), in a window of
 /// `width` by `height` logical pixels drawn at `scale`. It tests the same
 /// pixel-snapped rectangles that are drawn, so a click on a key's edge pixel
@@ -489,9 +586,10 @@ pub fn hit_test(
     fonts: &Fonts,
     (width, height): (f32, f32),
     scale: f32,
+    text_scale: f32,
     (x, y): (f32, f32),
 ) -> Option<(usize, usize)> {
-    let layout = Layout::new(fonts, width, height);
+    let layout = Layout::new(fonts, width, height, text_scale);
     let (x, y) = (x * scale, y * scale);
     for (row, labels) in KEYS.iter().enumerate() {
         for col in 0..labels.len() {
@@ -513,31 +611,31 @@ mod tests {
     fn hit_test_finds_the_corner_keys_and_misses_the_gaps() {
         let fonts = Fonts::load();
         let (w, h) = (320.0, 480.0);
-        let layout = Layout::new(&fonts, w, h);
+        let layout = Layout::new(&fonts, w, h, 1.0);
         let (x, y, kw, kh) = layout.key_rect(0, 0);
         assert_eq!(
-            hit_test(&fonts, (w, h), 1.0, (x + 1.0, y + 1.0)),
+            hit_test(&fonts, (w, h), 1.0, 1.0, (x + 1.0, y + 1.0)),
             Some((0, 0))
         );
         let (x, y, ..) = layout.key_rect(4, 3);
         assert_eq!(
-            hit_test(&fonts, (w, h), 1.0, (x + 1.0, y + 1.0)),
+            hit_test(&fonts, (w, h), 1.0, 1.0, (x + 1.0, y + 1.0)),
             Some((4, 3))
         );
         // Between the first two keys of the first row.
         assert_eq!(
-            hit_test(&fonts, (w, h), 1.0, (PADDING + kw + GAP / 2.0, y - kh)),
+            hit_test(&fonts, (w, h), 1.0, 1.0, (PADDING + kw + GAP / 2.0, y - kh)),
             None
         );
         // The display area.
-        assert_eq!(hit_test(&fonts, (w, h), 1.0, (w / 2.0, PADDING)), None);
+        assert_eq!(hit_test(&fonts, (w, h), 1.0, 1.0, (w / 2.0, PADDING)), None);
     }
 
     #[test]
     fn every_drawn_pixel_of_a_key_hits_that_key() {
         let fonts = Fonts::load();
         let (w, h) = (320.0, 480.0);
-        let layout = Layout::new(&fonts, w, h);
+        let layout = Layout::new(&fonts, w, h, 1.0);
         for scale in [1.0, 1.25, 1.5, 1.75] {
             for (row, col) in [(0, 0), (2, 1), (4, 3)] {
                 let (px, py, pw, ph) = layout.key_pixels(row, col, scale);
@@ -550,7 +648,7 @@ mod tests {
                 ] {
                     let at = ((x + 0.5) / scale, (y + 0.5) / scale);
                     assert_eq!(
-                        hit_test(&fonts, (w, h), scale, at),
+                        hit_test(&fonts, (w, h), scale, 1.0, at),
                         Some((row, col)),
                         "scale {scale}, pixel {x},{y}"
                     );
@@ -619,6 +717,8 @@ mod tests {
             display,
             pressed: None,
             notice: None,
+            focus: None,
+            text_scale: 1.0,
         };
         draw(
             &mut Canvas::new(&mut bytes, w, h),
@@ -652,6 +752,8 @@ mod tests {
                 display: "12",
                 pressed: None,
                 notice,
+                focus: None,
+                text_scale: 1.0,
             };
             draw(
                 &mut Canvas::new(&mut bytes, w, h),
@@ -685,7 +787,7 @@ mod tests {
     fn keypad_fits_inside_the_window() {
         let fonts = Fonts::load();
         for (w, h) in [(260.0, 380.0), (320.0, 480.0), (900.0, 1200.0)] {
-            let layout = Layout::new(&fonts, w, h);
+            let layout = Layout::new(&fonts, w, h, 1.0);
             let (x, y, kw, kh) = layout.key_rect(4, 3);
             assert!(
                 x + kw <= w - PADDING + 0.01 && y + kh <= h - PADDING + 0.01,
@@ -714,6 +816,111 @@ mod tests {
         }
         check("= label", p.on_accent, p.accent);
         check("= label held", p.on_accent, p.accent_pressed);
+        // Non-text (WCAG 1.4.11): key outlines and the focus ring, 3:1 on
+        // the background they meet.
+        let edge = |what: &str, c: Color| {
+            let r = contrast(c, p.background);
+            assert!(
+                r >= NON_TEXT_CONTRAST,
+                "{theme}: {what} is {r:.2}:1, needs 3:1"
+            );
+        };
+        edge("key outline", p.border);
+        edge("focus ring", p.focus);
+        edge("= key boundary", p.equals_border.unwrap_or(p.accent));
+    }
+
+    /// The smallest a key may be in either direction: the house rule is 44 px
+    /// (WCAG 2.5.8 asks 24). MIN_SIZE in src/window.rs keeps it.
+    const MIN_KEY: f32 = 44.0;
+
+    #[test]
+    fn keys_are_at_least_44_px_at_the_minimum_window() {
+        let fonts = Fonts::load();
+        // MIN_SIZE (260 × 400), grown by the text scale as window.rs does.
+        for text_scale in [0.75, 1.0, 1.5, 1.67, 2.0] {
+            let k = f32::max(text_scale, 1.0);
+            let (w, h) = ((260.0 * k).round(), (400.0 * k).round());
+            let layout = Layout::new(&fonts, w, h, text_scale);
+            let (_, _, kw, kh) = layout.key_rect(0, 0);
+            assert!(
+                kw >= MIN_KEY && kh >= MIN_KEY,
+                "text {text_scale}: keys {kw}×{kh}"
+            );
+        }
+    }
+
+    #[test]
+    fn focus_moves_by_tab_and_arrows() {
+        assert_eq!(move_focus(None, Move::Next), (0, 0));
+        assert_eq!(
+            move_focus(Some((0, 3)), Move::Next),
+            (1, 0),
+            "Tab wraps to the next row"
+        );
+        assert_eq!(
+            move_focus(Some((4, 3)), Move::Next),
+            (0, 0),
+            "and back to the top"
+        );
+        assert_eq!(move_focus(Some((0, 0)), Move::Previous), (4, 3));
+        assert_eq!(move_focus(Some((2, 1)), Move::Up), (1, 1));
+        assert_eq!(
+            move_focus(Some((0, 1)), Move::Up),
+            (0, 1),
+            "arrows stop at the edge"
+        );
+        assert_eq!(move_focus(Some((4, 3)), Move::Right), (4, 3));
+        assert_eq!(move_focus(Some((4, 3)), Move::Left), (4, 2));
+        assert_eq!(move_focus(Some((3, 0)), Move::Down), (4, 0));
+    }
+
+    #[test]
+    fn keys_have_an_outline_and_focus_draws_a_ring() {
+        let mut fonts = Fonts::load();
+        let palette = Palette::default();
+        let (w, h) = (320usize, 480usize);
+        let draw_with = |fonts: &mut Fonts, focus| {
+            let mut bytes = vec![0; w * h * 4];
+            let view = View {
+                expression: "",
+                display: "0",
+                pressed: None,
+                notice: None,
+                focus,
+                text_scale: 1.0,
+            };
+            draw(
+                &mut Canvas::new(&mut bytes, w, h),
+                fonts,
+                &palette,
+                &view,
+                (320.0, 480.0),
+                1.0,
+            );
+            bytes
+        };
+        let at = |bytes: &[u8], x: usize, y: usize| {
+            let p = &bytes[(y * w + x) * 4..(y * w + x) * 4 + 3];
+            Color::rgb(p[2], p[1], p[0])
+        };
+        let layout = Layout::new(&fonts, 320.0, 480.0, 1.0);
+        let (kx, ky, kw, kh) = layout.key_pixels(2, 1, 1.0);
+        let plain = draw_with(&mut fonts, None);
+        // The key's left edge, half way down, is outline; one in, fill.
+        let mid = (ky + kh / 2.0) as usize;
+        assert_eq!(at(&plain, kx as usize, mid), palette.border);
+        assert_eq!(at(&plain, kx as usize + 2, mid), palette.key);
+        // Focus: the ring sits in the gap, 2 px out from the key, 2 px wide.
+        let focused = draw_with(&mut fonts, Some((2, 1)));
+        let ring_x = kx as usize - 3;
+        assert_eq!(
+            at(&plain, ring_x, mid),
+            palette.background,
+            "no ring without focus"
+        );
+        assert_eq!(at(&focused, ring_x, mid), palette.focus);
+        let _ = kw;
     }
 
     #[test]
@@ -797,6 +1004,8 @@ mod tests {
             display: "7,006,652",
             pressed: Some((2, 1)),
             notice: None,
+            focus: None,
+            text_scale: 1.0,
         };
         // Warm the glyph cache, as every frame after the first finds it.
         draw(
