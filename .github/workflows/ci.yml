@@ -1,0 +1,66 @@
+# Runs on the org's self-hosted home runners (shared with other
+# repositories: one VM, one Docker daemon). Their host has no Rust and no
+# sudo, so the job runs in a container where it is root and can
+# apt-install what it needs. The runner runs as uid 1001 and cleans the
+# workspace and its temp directory before the next job; it can't remove
+# what root left there, so the job ends by handing both back.
+#
+# No test opens a window.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A PR's runs share a group, so a new push cancels the one it supersedes.
+# Each push to main has a group of its own, so every commit gets a result.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The job runs PR code as root on shared runners: its token reads only.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  DEBIAN_FRONTEND: noninteractive
+  LANG: C.UTF-8
+
+jobs:
+  check:
+    name: fmt, clippy, tests, release build
+    runs-on: [self-hosted, home]
+    container: ubuntu:24.04
+    timeout-minutes: 30
+    steps:
+      # git before checkout, or checkout falls back to a tarball; a C
+      # compiler for the linker; libxkbcommon for keyboard layouts (the
+      # Wayland client is pure Rust, so libwayland isn't needed).
+      - name: Install build dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            git ca-certificates curl build-essential pkg-config \
+            libxkbcommon-dev python3 >/dev/null
+      - uses: actions/checkout@v4
+      # A clean Rust each time: an earlier job's half-installed rustup in
+      # the shared $HOME breaks the install.
+      - name: Start from a clean home
+        run: rm -rf "$HOME/.cargo" "$HOME/.rustup"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Benchmark scripts parse
+        run: |
+          python3 -m py_compile bench/calcbench.py
+          bash -n bench/run
+      - name: Hand the workspace back to the runner user
+        if: always()
+        run: chown -R 1001:1001 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"

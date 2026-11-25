@@ -1,0 +1,65 @@
+#!/bin/bash
+# Benchmark Alias Calc against omacalc and GNOME Calculator and print one
+# table. Needs a Hyprland session; the windows open on the current workspace.
+#
+#   bench/run [--runs N]
+#
+# omacalc comes from $OMACALC, else `omacalc` on PATH, else it's skipped.
+# Build it from https://github.com/omacom/omacalc with `bin/build`.
+# GNOME Calculator must not already be running (it would hand off to the
+# running copy instead of starting).
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+runs=10
+while (($#)); do
+  case $1 in
+    --runs) runs=${2:?--runs needs a number}; shift 2 ;;
+    --runs=*) runs=${1#--runs=}; shift ;;
+    *) echo "Usage: bench/run [--runs N]" >&2; exit 2 ;;
+  esac
+done
+
+cargo build --release --locked --quiet
+target=$(cargo metadata --format-version 1 --no-deps | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+results=()
+
+bench() {
+  local name=$1 class=$2
+  shift 2
+  local row
+  if row=$(python3 -I bench/calcbench.py --runs "$runs" "$name" "$class" -- "$@"); then
+    results+=("$row")
+  fi
+}
+
+bench alias-calc com.aliasproject.calc "$target/release/alias-calc"
+# The table still prints the others, but a run without Alias Calc's own row
+# is a failure.
+alias_calc_measured=${#results[@]}
+
+omacalc=${OMACALC:-$(command -v omacalc || true)}
+if [[ -n $omacalc ]]; then
+  bench omacalc omacalc "$omacalc"
+else
+  echo "Skipping omacalc: set OMACALC or put omacalc on PATH." >&2
+fi
+
+if command -v gnome-calculator >/dev/null; then
+  if pgrep -f '(^|/)gnome-calculator( |$)' >/dev/null; then
+    echo "Skipping GNOME Calculator: it's already running." >&2
+  else
+    bench gnome-calculator org.gnome.calculator gnome-calculator
+  fi
+fi
+
+if ((${#results[@]} == 0)); then
+  echo "No app was measured." >&2
+  exit 1
+fi
+printf '%s\n' "${results[@]}" | python3 -I bench/calcbench.py --table
+if ((alias_calc_measured == 0)); then
+  echo "Alias Calc wasn't measured." >&2
+  exit 1
+fi
