@@ -789,18 +789,15 @@ impl KeyboardHandler for App {
         // Ctrl+Insert / Shift+Insert for some, so those work too.
         if (m.ctrl || m.logo) && !m.alt && !m.shift {
             match event.keysym {
-                Keysym::c | Keysym::C | Keysym::Insert | Keysym::KP_Insert => self.copy(qh, serial),
+                // Only the main Insert key: Shift or Ctrl with numpad 0 under
+                // NumLock is KP_Insert, and that should stay a 0.
+                Keysym::c | Keysym::C | Keysym::Insert => self.copy(qh, serial),
                 Keysym::v | Keysym::V => self.paste(),
                 _ => {}
             }
             return;
         }
-        if m.shift
-            && !m.ctrl
-            && !m.alt
-            && !m.logo
-            && matches!(event.keysym, Keysym::Insert | Keysym::KP_Insert)
-        {
+        if m.shift && !m.ctrl && !m.alt && !m.logo && event.keysym == Keysym::Insert {
             self.paste();
             return;
         }

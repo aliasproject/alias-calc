@@ -452,11 +452,9 @@ impl Calc {
         // and "555 1234" aren't.
         let is_space = |c: char| matches!(c, ' ' | '\u{a0}' | '\u{2009}' | '\u{202f}');
         let mut text = if text.contains(is_space) {
-            let whole = text.split(['.', ',']).next().unwrap_or("");
-            if text.contains(',') && text.contains(is_space) && whole.contains(',') {
-                return false;
-            }
-            if !is_grouped(&whole.replace(is_space, ",")) {
+            let (whole, fraction) = text.split_once(['.', ',']).unwrap_or((&text, ""));
+            // Grouping is for whole numbers only: "1 234.5 6" isn't a number.
+            if fraction.contains(is_space) || !is_grouped(&whole.replace(is_space, ",")) {
                 return false;
             }
             text.replace(is_space, "")
@@ -1146,12 +1144,20 @@ mod tests {
             ("1\u{a0}234,5", "1,234.5"),
             ("1\u{202f}234\u{202f}567.89", "1,234,567.89"),
             ("  42  ", "42"),
+            ("12 345 678", "12,345,678"),
         ] {
             let mut calc = Calc::new();
             assert!(calc.paste(text), "{text:?}");
             assert_eq!(calc.display(), shown, "{text:?}");
         }
-        for text in ["2026 11 25", "555 1234", "12 34", "1 23"] {
+        for text in [
+            "2026 11 25",
+            "555 1234",
+            "12 34",
+            "1 23",
+            "1 234.5 6",
+            "12 345,6 7",
+        ] {
             assert!(!Calc::new().paste(text), "{text:?} isn't a number");
         }
     }
