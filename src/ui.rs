@@ -163,6 +163,12 @@ impl Palette {
             key_pressed = key_pressed.mix(away_from_text, 0.1);
             labels = KeyLabels::on(background, foreground, muted, accent, key, key_pressed);
         }
+        // Never seen to fail over 4 million random themes; if a change to the
+        // steps or mixes ever breaks that, debug builds and the tests say so.
+        debug_assert!(
+            labels.pass(background, key, key_pressed),
+            "key labels under 4.5:1"
+        );
         Self {
             background,
             foreground: labels.foreground,
@@ -215,8 +221,9 @@ impl KeyLabels {
 }
 
 /// `ink`, or the nearest colour towards white or black that has at least
-/// `min` contrast with every one of `grounds`. Whichever direction needs the
-/// smaller step wins. If neither gets there it returns the better of white
+/// `min` contrast with every one of `grounds`. It moves in 5% steps and stops
+/// at the first step where either direction passes, taking the direction
+/// with more contrast there. If neither gets there it returns the better of white
 /// and black; for 4.5:1 that can't happen with the grounds used here (white
 /// or black reaches 4.58:1 on any one colour, and each set is close
 /// together), which `any_theme_meets_aa` checks over 20,000 random themes.
@@ -634,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn a_notice_replaces_the_expression_in_the_accent_color() {
+    fn a_notice_replaces_the_expression_in_its_own_colour() {
         let mut fonts = Fonts::load();
         let palette = Palette::default();
         let (w, h) = (320usize, 480usize);
@@ -661,7 +668,7 @@ mod tests {
                 .chunks(4)
                 .any(|p| (p[2], p[1], p[0]) == (c.r, c.g, c.b))
         };
-        // The expression is drawn muted; with a notice, the accent shows in
+        // The expression is drawn muted; with a notice, the notice colour shows in
         // the expression line's rows and the muted ink doesn't.
         let rows = |bytes: &[u8]| {
             let top = PADDING as usize * w * 4;
@@ -728,6 +735,11 @@ mod tests {
             assert_eq!(p.foreground, hex(fg), "{name}");
             assert_eq!(p.notice, hex(accent), "{name}");
             assert_eq!(p.muted, hex(bg).mix(hex(fg), 0.65), "{name}");
+            // Under the dark = label these themes have, a held = lightens.
+            assert!(
+                p.accent_pressed.luminance() > p.accent.luminance(),
+                "{name}"
+            );
         }
         assert_eq!(Palette::default().muted, hex("#868dad"));
     }
