@@ -36,13 +36,14 @@ jobs:
     timeout-minutes: 30
     steps:
       # git before checkout, or checkout falls back to a tarball; a C
-      # compiler for the linker; and the two libraries the app links.
+      # compiler for the linker; libxkbcommon for keyboard layouts (the
+      # Wayland client is pure Rust, so libwayland isn't needed).
       - name: Install build dependencies
         run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends \
             git ca-certificates curl build-essential pkg-config \
-            libwayland-dev libxkbcommon-dev python3 >/dev/null
+            libxkbcommon-dev python3 >/dev/null
       - uses: actions/checkout@v4
       # A clean Rust each time: an earlier job's half-installed rustup in
       # the shared $HOME breaks the install.
@@ -56,6 +57,10 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - run: cargo build --release --locked
+      # The renderer's frame budget: only meaningful optimised, so it's
+      # ignored in the debug test run.
+      - name: Performance budgets
+        run: cargo test --release --locked -- --ignored budget_
       - name: Benchmark scripts parse
         run: |
           python3 -m py_compile bench/calcbench.py

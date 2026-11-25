@@ -10,7 +10,7 @@ Linear project: Alias Calc (P-ALI-28).
 cargo build --release
 ```
 
-The binary is `target/release/alias-calc`. It links only `wayland` and `libxkbcommon`.
+The binary is `target/release/alias-calc`. The aim is to link nothing beyond libc and `libxkbcommon` (for keyboard layouts), with a pure-Rust Wayland client.
 
 ## Benchmark
 

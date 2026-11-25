@@ -3,8 +3,8 @@
 //! `viewporter`.
 //!
 //! Everything runs on the one thread. The loop blocks in `poll` on the
-//! Wayland socket and only wakes when the compositor sends something, so an
-//! idle window costs no CPU at all.
+//! Wayland socket and only wakes when the compositor sends something (or a
+//! held Backspace is due to repeat), so an idle window costs no CPU at all.
 
 use std::error::Error;
 use std::time::{Duration, Instant};
@@ -124,8 +124,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // Parse the fonts while the compositor works on the configure.
     let fonts = Fonts::load();
     trace::mark("fonts loaded");
-    let palette = theme::load();
+    // Watch first, so a theme swapped in between isn't missed.
     let theme_watch = theme::Watch::new();
+    let palette = theme::load().unwrap_or_default();
     trace::mark("theme read");
 
     let (w, h) = DEFAULT_SIZE;
@@ -161,30 +162,41 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         drawn: false,
         keyboard_seat: None,
         pointer_seat: None,
+        input_seat: None,
         dirty: false,
         exit: false,
     };
 
-    event_loop(&mut queue, &mut app, theme_watch.as_ref())
+    event_loop(&mut queue, &mut app, theme_watch)
 }
 
 type Queue = smithay_client_toolkit::reexports::client::EventQueue<App>;
 
 /// Dispatch, draw if anything changed, then sleep until the compositor
-/// writes to the socket. No timeouts: an idle window never wakes.
-/// `theme` is None when there's no theme to follow.
+/// writes to the socket, the theme changes or a paste arrives. The only timeout is a held
+/// Backspace's next repeat, so an idle window never wakes. `theme` is None
+/// when there's no theme to follow.
 fn event_loop(
     queue: &mut Queue,
     app: &mut App,
-    theme: Option<&theme::Watch>,
+    mut theme: Option<theme::Watch>,
 ) -> Result<(), Box<dyn Error>> {
     loop {
         queue.dispatch_pending(app)?;
         if app.exit {
             return Ok(());
         }
+        // A busy socket (pointer motion while Backspace is held) would keep
+        // poll from ever timing out, so a due repeat fires here too.
+        if app
+            .repeat
+            .as_ref()
+            .is_some_and(|r| r.next <= Instant::now())
+        {
+            app.repeat_tick();
+        }
         if app.dirty && app.configured {
-            app.draw();
+            app.draw()?;
             if app.keyboard_seat.is_some() || app.pointer_seat.is_some() {
                 // Send the first frame on its own: a new keyboard makes the
                 // compositor build and send a keymap, and that shouldn't
@@ -193,21 +205,28 @@ fn event_loop(
                 app.bind_input(&queue.handle());
             }
         }
-        match queue.flush() {
-            Ok(()) => {}
-            Err(WaylandError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+        // A full socket leaves requests queued; then wait until it can take
+        // more as well as for events.
+        let unsent = match queue.flush() {
+            Ok(()) => false,
+            Err(WaylandError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => true,
             Err(err) => return Err(err.into()),
-        }
+        };
 
         // Events already queued mean there's nothing to wait for.
         let Some(guard) = queue.prepare_read() else {
             continue;
         };
         let fd = guard.connection_fd();
-        let theme_fd = theme.map(|w| w.fd());
+        let theme_fd = theme.as_ref().map(|w| w.fd());
         // Out of `app` while polled, so its fd can be borrowed alongside.
         let mut paste = app.paste.take();
         let paste_fd = paste.as_ref().map(|p| p.fd());
+        let flags = if unsent {
+            PollFlags::IN | PollFlags::OUT
+        } else {
+            PollFlags::IN
+        };
         // Only a held Backspace sets a timeout; otherwise sleep until the
         // compositor sends something.
         let timeout = app.repeat.as_ref().map(|r| {
@@ -217,11 +236,11 @@ fn event_loop(
                 tv_nsec: wait.subsec_nanos() as _,
             }
         });
-        // A missing theme watch or paste polls the Wayland fd again with
-        // no events asked for, which never wakes the loop.
+        // Without a theme watch or a paste, a slot polls the Wayland fd
+        // again with no events asked for. It's never read in that case.
         let idle = || PollFd::from_borrowed_fd(fd, PollFlags::empty());
         let mut fds = [
-            PollFd::new(&fd, PollFlags::IN),
+            PollFd::new(&fd, flags),
             theme_fd
                 .as_ref()
                 .map_or_else(idle, |f| PollFd::new(f, PollFlags::IN)),
@@ -230,32 +249,40 @@ fn event_loop(
                 .map_or_else(idle, |f| PollFd::new(f, PollFlags::IN)),
         ];
         let polled = poll(&mut fds, timeout.as_ref());
-        let ready = |i: usize| !fds[i].revents().is_empty();
-        let (wayland_ready, theme_ready, paste_ready) = (
-            ready(0),
-            theme_fd.is_some() && ready(1),
-            paste_fd.is_some() && ready(2),
-        );
+        let wayland_in = fds[0].revents().contains(PollFlags::IN);
+        let theme_ready = theme_fd.is_some() && !fds[1].revents().is_empty();
+        let paste_ready = paste_fd.is_some() && !fds[2].revents().is_empty();
         drop(theme_fd);
         drop(paste_fd);
+        // Before anything that can `continue`, so the paste is never lost.
         if paste_ready && let Some(mut reading) = paste.take() {
             paste = app.paste_progress(reading.read(), reading);
         }
         app.paste = paste;
         match polled {
+            // The repeat's time came: the top of the loop fires it.
             Ok(0) => {
                 drop(guard);
-                app.repeat_tick();
                 continue;
             }
             Ok(_) => {}
             Err(Errno::INTR) => continue,
             Err(err) => return Err(err.into()),
         }
-        if theme_ready && theme.is_some_and(|w| w.changed()) {
-            app.reload_theme();
+        if theme_ready && let Some(watch) = &theme {
+            match watch.changed() {
+                Ok(true) => app.reload_theme(),
+                Ok(false) => {}
+                // A broken watch would keep the fd readable and spin the
+                // loop: stop following the theme instead.
+                Err(err) => {
+                    eprintln!("alias-calc: stopped following the theme: {err}");
+                    theme = None;
+                }
+            }
         }
-        if !wayland_ready {
+        if !wayland_in {
+            // Only writable, or only the theme: go round.
             drop(guard);
             continue;
         }
@@ -319,6 +346,8 @@ struct App {
     /// Seats whose keyboard and pointer wait for the first frame.
     keyboard_seat: Option<wl_seat::WlSeat>,
     pointer_seat: Option<wl_seat::WlSeat>,
+    /// The seat the keyboard and pointer were bound from.
+    input_seat: Option<wl_seat::WlSeat>,
     /// Something changed since the last frame.
     dirty: bool,
     exit: bool,
@@ -332,7 +361,34 @@ struct Repeat {
 }
 
 impl App {
+    /// Forgets the keyboard and anything it held: a lit key, a repeat.
+    fn drop_keyboard(&mut self) {
+        self.keyboard_seat = None;
+        if let Some(keyboard) = self.keyboard.take() {
+            keyboard.release();
+        }
+        if self.key_down.take().is_some() {
+            self.dirty = true;
+        }
+        self.repeat = None;
+    }
+
+    /// Forgets the pointer and a button it held down.
+    fn drop_pointer(&mut self) {
+        self.pointer_seat = None;
+        if let Some(cursor) = self.cursor.take() {
+            cursor.destroy();
+        }
+        if let Some(pointer) = self.pointer.take() {
+            pointer.release();
+        }
+        if self.mouse_down.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
     fn bind_keyboard(&mut self, qh: &QueueHandle<Self>, seat: &wl_seat::WlSeat) {
+        self.input_seat = Some(seat.clone());
         match self.seats.get_keyboard(qh, seat, None) {
             Ok(keyboard) => self.keyboard = Some(keyboard),
             Err(err) => eprintln!("alias-calc: no keyboard: {err}"),
@@ -389,6 +445,7 @@ impl App {
     }
 
     fn bind_pointer(&mut self, qh: &QueueHandle<Self>, seat: &wl_seat::WlSeat) {
+        self.input_seat = Some(seat.clone());
         match self.seats.get_pointer(qh, seat) {
             Ok(pointer) => {
                 self.cursor = self
@@ -416,8 +473,10 @@ impl App {
         self.dirty = true;
     }
 
+    /// Reads the theme again. A theme that can't be read keeps the colors
+    /// already showing rather than flashing the built-in ones.
     fn reload_theme(&mut self) {
-        let palette = theme::load();
+        let Some(palette) = theme::load() else { return };
         if palette != self.palette {
             self.palette = palette;
             self.dirty = true;
@@ -444,7 +503,13 @@ impl App {
     fn button_under_pointer(&self) -> Option<(usize, usize)> {
         let (w, h) = self.size;
         let (x, y) = self.mouse_at;
-        ui::hit_test(&self.fonts, w as f32, h as f32, x as f32, y as f32)
+        let scale = self.pixel_size().0 as f32 / w as f32;
+        ui::hit_test(
+            &self.fonts,
+            (w as f32, h as f32),
+            scale,
+            (x as f32, y as f32),
+        )
     }
 
     /// The buffer's size in pixels for the current logical size and scale.
@@ -469,7 +534,10 @@ impl App {
         mouse.or(self.key_down.and_then(|(_, cell)| cell))
     }
 
-    fn draw(&mut self) {
+    /// Draws and commits a frame. An error means the window can't be shown
+    /// (no memory for the buffer), which ends the app rather than leaving it
+    /// running unseen.
+    fn draw(&mut self) -> Result<(), Box<dyn Error>> {
         self.dirty = false;
         let expression = self.calc.expression();
         let display = self.calc.display();
@@ -489,17 +557,14 @@ impl App {
                 .create_buffer(pw as i32, ph as i32, stride, wl_shm::Format::Argb8888)
             {
                 Ok((buffer, _)) => self.buffer = Some(buffer),
-                Err(err) => {
-                    eprintln!("alias-calc: can't allocate a {pw}x{ph} buffer: {err}");
-                    return;
-                }
+                Err(err) => return Err(format!("can't allocate a {pw}x{ph} buffer: {err}").into()),
             }
         }
         let Some(buffer) = self.buffer.as_ref() else {
-            return;
+            return Err("no buffer".into());
         };
         let Some(canvas) = self.pool.canvas(buffer) else {
-            return;
+            return Err("the new buffer is busy".into());
         };
 
         let scale = pw as f32 / self.size.0 as f32;
@@ -519,15 +584,15 @@ impl App {
             Scaling::Integer(scale) => surface.set_buffer_scale(*scale as i32),
         }
         surface.damage_buffer(0, 0, pw as i32, ph as i32);
-        if let Err(err) = buffer.attach_to(surface) {
-            eprintln!("alias-calc: can't attach the buffer: {err}");
-            return;
-        }
+        buffer
+            .attach_to(surface)
+            .map_err(|err| format!("can't attach the buffer: {err}"))?;
         self.window.commit();
         self.drawn = true;
         if trace::on() {
             trace::mark(&format!("frame committed ({pw}x{ph} px)"));
         }
+        Ok(())
     }
 }
 
@@ -603,10 +668,9 @@ impl WindowHandler for App {
         if !self.configured {
             trace::mark("configured");
         }
-        let (w, h) = match configure.new_size {
-            (Some(w), Some(h)) => (w.get(), h.get()),
-            _ => self.size,
-        };
+        // Each axis the compositor leaves at 0 is ours to choose.
+        let w = configure.new_size.0.map_or(self.size.0, |w| w.get());
+        let h = configure.new_size.1.map_or(self.size.1, |h| h.get());
         self.size = (w.max(1), h.max(1));
         self.configured = true;
         // Every configure needs a commit to answer it, even when the size
@@ -655,31 +719,26 @@ impl SeatHandler for App {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Keyboard {
-            self.keyboard_seat = None;
-        }
-        if capability == Capability::Pointer {
-            self.pointer_seat = None;
-        }
-        if capability == Capability::Keyboard
-            && let Some(keyboard) = self.keyboard.take()
-        {
-            keyboard.release();
-            self.key_down = None;
-            self.repeat = None;
-        }
-        if capability == Capability::Pointer
-            && let Some(pointer) = self.pointer.take()
-        {
-            if let Some(cursor) = self.cursor.take() {
-                cursor.destroy();
-            }
-            pointer.release();
-            self.mouse_down = None;
+        match capability {
+            Capability::Keyboard => self.drop_keyboard(),
+            Capability::Pointer => self.drop_pointer(),
+            _ => {}
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    /// SCTK reports a removed seat only here, without removing its
+    /// capabilities first, so the same teardown happens.
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if self.keyboard_seat.as_ref() == Some(&seat) || self.input_seat.as_ref() == Some(&seat) {
+            self.drop_keyboard();
+        }
+        if self.pointer_seat.as_ref() == Some(&seat) || self.input_seat.as_ref() == Some(&seat) {
+            self.drop_pointer();
+        }
+        if self.input_seat.as_ref() == Some(&seat) {
+            self.input_seat = None;
+        }
+    }
 }
 
 impl KeyboardHandler for App {
@@ -806,6 +865,9 @@ impl KeyboardHandler for App {
             )),
             RepeatInfo::Disable => None,
         };
+        if self.repeat_rate.is_none() {
+            self.repeat = None;
+        }
     }
 }
 

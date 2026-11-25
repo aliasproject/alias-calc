@@ -20,12 +20,17 @@ pub fn key_for(sym: Keysym) -> Option<Key> {
         Keysym::_7 | Keysym::KP_7 | Keysym::KP_Home => Key::Digit(7),
         Keysym::_8 | Keysym::KP_8 | Keysym::KP_Up => Key::Digit(8),
         Keysym::_9 | Keysym::KP_9 | Keysym::KP_Prior => Key::Digit(9),
-        Keysym::period | Keysym::KP_Decimal | Keysym::KP_Delete => Key::Point,
+        // KP_Separator is the numpad's decimal key on layouts with a decimal
+        // comma (German, French).
+        Keysym::period | Keysym::KP_Decimal | Keysym::KP_Separator | Keysym::KP_Delete => {
+            Key::Point
+        }
         Keysym::plus | Keysym::KP_Add => Key::Op(Op::Add),
         Keysym::minus | Keysym::KP_Subtract => Key::Op(Op::Sub),
         Keysym::asterisk | Keysym::KP_Multiply | Keysym::x | Keysym::X => Key::Op(Op::Mul),
         Keysym::slash | Keysym::KP_Divide => Key::Op(Op::Div),
-        Keysym::asciicircum => Key::Op(Op::Pow),
+        // ^ is a dead key on many European layouts.
+        Keysym::asciicircum | Keysym::dead_circumflex => Key::Op(Op::Pow),
         Keysym::percent => Key::Percent,
         Keysym::Return | Keysym::KP_Enter | Keysym::equal | Keysym::KP_Equal => Key::Equals,
         Keysym::BackSpace => Key::Backspace,
@@ -59,6 +64,8 @@ mod tests {
         }
         assert_eq!(key_for(Keysym::KP_Delete), Some(Key::Point));
         assert_eq!(key_for(Keysym::KP_Enter), Some(Key::Equals));
+        assert_eq!(key_for(Keysym::KP_Separator), Some(Key::Point));
+        assert_eq!(key_for(Keysym::dead_circumflex), Some(Key::Op(Op::Pow)));
     }
 
     #[test]
