@@ -7,7 +7,7 @@ buffer maps the toplevel). After the window settles, it reads PSS, RSS and the
 thread count for the process tree, then counts context switches (wakeups) over
 an idle period. It prints the medians as one JSON line.
 
-Usage: calcbench.py [--runs N] <name> <window-class-substring> -- cmd args...
+Usage: calcbench.py [--runs N] <name> <window-class> -- cmd args...
        calcbench.py --table < results.jsonl
 
 The windows open on the current workspace, so leave the machine alone while it
@@ -68,32 +68,70 @@ def memory(pids):
 
 
 def switches(pids):
-    total = 0
+    """Context switches per thread, as {(pid, tid): count}. Voluntary ones
+    (the thread slept and was woken) plus involuntary ones (preempted while
+    running): both mean the thread was on a CPU."""
+    counts = {}
     for p in pids:
         try:
-            for t in os.listdir(f"/proc/{p}/task"):
-                with open(f"/proc/{p}/task/{t}/status") as f:
-                    for line in f:
-                        if line.startswith(("voluntary_ctxt", "nonvoluntary_ctxt")):
-                            total += int(line.split()[1])
+            tids = os.listdir(f"/proc/{p}/task")
         except OSError:
-            pass
-    return total
+            continue
+        for t in tids:
+            try:
+                with open(f"/proc/{p}/task/{t}/status") as f:
+                    counts[(p, t)] = sum(
+                        int(line.split()[1])
+                        for line in f
+                        if line.startswith(("voluntary_ctxt", "nonvoluntary_ctxt"))
+                    )
+            except OSError:
+                pass
+    return counts
 
 
-def wait_for_window(sock, wclass):
+def wakeups(before, after):
+    """Switches between two samples. A thread in both counts its difference;
+    one that started in between counts all of its switches; one that ended
+    counts none it made after the first sample (they can't be read)."""
+    return sum(n - before.get(key, 0) for key, n in after.items())
+
+
+def window_class(line):
+    """The class in `openwindow>>ADDRESS,WORKSPACE,CLASS,TITLE`, lowercased."""
+    payload = line.decode(errors="replace").removeprefix("openwindow>>")
+    fields = payload.split(",", 3)
+    return fields[2].lower() if len(fields) >= 3 else None
+
+
+def wait_for_window(sock, wclass, proc):
     deadline = time.perf_counter() + MAP_TIMEOUT
     buf = b""
     while True:
-        sock.settimeout(max(0.01, deadline - time.perf_counter()))
-        chunk = sock.recv(65536)
+        left = deadline - time.perf_counter()
+        # Other windows' events keep arriving, so the deadline is checked
+        # here, not only through the socket timeout.
+        if left <= 0:
+            raise TimeoutError
+        if proc.poll() is not None:
+            raise RuntimeError(f"exited with status {proc.returncode} before opening a window")
+        sock.settimeout(min(left, 0.25))
+        try:
+            chunk = sock.recv(65536)
+        except (TimeoutError, socket.timeout):
+            continue
         if not chunk:
             raise ConnectionError("Hyprland closed the event socket")
         buf += chunk
         *lines, buf = buf.split(b"\n")
         for line in lines:
-            if line.startswith(b"openwindow>>") and wclass in line.decode(errors="replace").lower():
+            if line.startswith(b"openwindow>>") and window_class(line) == wclass:
                 return time.perf_counter()
+
+
+def still_running(proc, when):
+    if proc.poll() is not None:
+        raise RuntimeError(f"exited with status {proc.returncode} {when}")
 
 
 def run_once(cmd, wclass, path):
@@ -103,24 +141,38 @@ def run_once(cmd, wclass, path):
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
     try:
-        mapped = wait_for_window(sock, wclass)
+        mapped = wait_for_window(sock, wclass, proc)
         sock.close()
         time.sleep(SETTLE)
+        # A crashed app would otherwise read as zero memory and no wakeups.
+        still_running(proc, "while settling")
         pids = tree(proc.pid)
         pss, rss, threads = memory(pids)
         before = switches(pids)
         time.sleep(IDLE)
-        wakeups = (switches(tree(proc.pid)) - before) / IDLE
+        still_running(proc, "while idle")
+        idle_wakeups = wakeups(before, switches(tree(proc.pid))) / IDLE
     finally:
         sock.close()
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        proc.wait()
-        time.sleep(0.5)
+        stop(proc)
     return dict(map_ms=(mapped - start) * 1000, pss_kb=pss, rss_kb=rss, threads=threads,
-                wakeups_s=wakeups)
+                wakeups_s=idle_wakeups)
+
+
+def stop(proc):
+    """SIGTERM the app's process group, then SIGKILL it if it lingers (a
+    lingering GNOME Calculator would take over the next run's launch)."""
+    for sig, wait in ((signal.SIGTERM, 3), (signal.SIGKILL, 3)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            break
+        try:
+            proc.wait(timeout=wait)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    time.sleep(0.5)
 
 
 def table():
@@ -144,7 +196,7 @@ def main():
         sys.exit(__doc__)
     split = argv.index("--")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--runs", type=int, default=10, choices=range(1, 1001), metavar="N")
     parser.add_argument("name")
     parser.add_argument("wclass")
     args = parser.parse_args(argv[:split])
@@ -155,6 +207,8 @@ def main():
         results = [run_once(cmd, args.wclass.lower(), path) for _ in range(args.runs)]
     except (TimeoutError, socket.timeout):
         sys.exit(f"calcbench: {args.name}: no window within {MAP_TIMEOUT:.0f} s")
+    except (OSError, RuntimeError) as err:
+        sys.exit(f"calcbench: {args.name}: {err}")
 
     median = {k: round(statistics.median(r[k] for r in results), 1) for k in results[0]}
     median["map_ms_min"] = round(min(r["map_ms"] for r in results), 1)
