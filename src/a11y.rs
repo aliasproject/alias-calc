@@ -51,6 +51,8 @@ pub enum Request {
 pub struct State<'a> {
     pub expression: &'a str,
     pub display: &'a str,
+    /// A status shown under the result ("Copied"), announced with it.
+    pub notice: Option<&'a str>,
     /// The focused key, if any; otherwise the window has focus.
     pub focus: Option<(usize, usize)>,
     /// Each key's rectangle (x, y, width, height) in logical pixels.
@@ -59,7 +61,7 @@ pub struct State<'a> {
 }
 
 /// The library's interface version (`ABI` in a11y/src/lib.rs).
-const ABI: u32 = 1;
+const ABI: u32 = 2;
 const LIBRARY: &str = "libalias_calc_a11y.so";
 const REQUEST_TREE: u32 = 1;
 const REQUEST_PRESS: u32 = 2;
@@ -98,6 +100,7 @@ struct CState {
     title: Str,
     expression: Str,
     result: Str,
+    status: Str,
     buttons: *const Button,
     button_count: usize,
     focus: i32,
@@ -288,10 +291,13 @@ impl Access {
                 }
             })
             .collect();
+        let expression = spoken(state.expression);
+        let result = spoken(state.display);
         let c = CState {
             title: crate::window::TITLE.into(),
-            expression: state.expression.into(),
-            result: state.display.into(),
+            expression: expression.as_str().into(),
+            result: result.as_str().into(),
+            status: state.notice.unwrap_or("").into(),
             buttons: buttons.as_ptr(),
             button_count: buttons.len(),
             focus: state
@@ -310,6 +316,32 @@ impl Access {
     }
 }
 
+/// Text as a screen reader should say it: symbols that Orca skips at its
+/// default punctuation level become words ("7 − 2 =" is "7 minus 2
+/// equals", "−5" is "minus 5"). Digits and separators pass through.
+pub fn spoken(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    for c in text.chars() {
+        let word = match c {
+            '+' => "plus",
+            '−' | '-' => "minus",
+            '×' | '*' => "times",
+            '÷' | '/' => "divided by",
+            '^' => "to the power of",
+            '%' => "percent",
+            '=' => "equals",
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        out.push(' ');
+        out.push_str(word);
+        out.push(' ');
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The key a button index (reading order) is.
 fn cell_of_button(index: usize) -> Option<(usize, usize)> {
     (index < KEYS.len() * COLUMNS).then_some((index / COLUMNS, index % COLUMNS))
@@ -323,10 +355,10 @@ pub fn spoken_name(key: Key) -> &'static str {
             .copied()
             .unwrap_or(""),
         Key::Point => "Point",
-        Key::Op(Op::Add) => "Add",
-        Key::Op(Op::Sub) => "Subtract",
-        Key::Op(Op::Mul) => "Multiply",
-        Key::Op(Op::Div) => "Divide",
+        Key::Op(Op::Add) => "Plus",
+        Key::Op(Op::Sub) => "Minus",
+        Key::Op(Op::Mul) => "Times",
+        Key::Op(Op::Div) => "Divided by",
         Key::Op(Op::Pow) => "Power",
         Key::Equals => "Equals",
         Key::Percent => "Percent",
@@ -356,7 +388,10 @@ mod tests {
             }
         }
         for name in [
-            "Divide",
+            "Divided by",
+            "Minus",
+            "Plus",
+            "Times",
             "Backspace",
             "Change sign",
             "Clear",
@@ -369,6 +404,17 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), names.len(), "names repeat");
+    }
+
+    #[test]
+    fn symbols_are_spoken_as_words() {
+        assert_eq!(spoken("7 −"), "7 minus");
+        assert_eq!(spoken("12 × 3 ÷ 4 ="), "12 times 3 divided by 4 equals");
+        assert_eq!(spoken("−5"), "minus 5");
+        assert_eq!(spoken("-1,234.5"), "minus 1,234.5");
+        assert_eq!(spoken("2 ^ 8 + 50%"), "2 to the power of 8 plus 50 percent");
+        assert_eq!(spoken("Error"), "Error");
+        assert_eq!(spoken(""), "");
     }
 
     #[test]

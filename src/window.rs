@@ -614,6 +614,7 @@ impl App {
         access.update(&a11y::State {
             expression: &expression,
             display: &display,
+            notice: self.notice_until.map(|_| "Copied"),
             // The focus a screen reader hears is the one drawn.
             focus: self.focus.filter(|_| self.focus_visible),
             keys: ui::key_rects(&self.fonts, size, self.text_scale),
@@ -1140,10 +1141,12 @@ impl PointerHandler for App {
                     self.mouse_down = self.button_under_pointer();
                     // A click moves focus to the key, but the ring is for
                     // keyboard users: it hides until the next Tab or arrow.
+                    // With a screen reader it stays, so what's heard as
+                    // focused (the drawn focus) stays on the key.
                     if let Some(cell) = self.mouse_down {
                         self.focus = Some(cell);
                     }
-                    if self.focus_visible {
+                    if self.focus_visible && self.access.is_none() {
                         self.focus_visible = false;
                         self.dirty = true;
                     }

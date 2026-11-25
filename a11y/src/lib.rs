@@ -26,7 +26,7 @@ use accesskit::{
 };
 
 /// Bumped on any change to the functions or structs below.
-pub const ABI: u32 = 1;
+pub const ABI: u32 = 2;
 
 /// A borrowed UTF-8 string.
 #[repr(C)]
@@ -66,6 +66,8 @@ pub struct State {
     pub title: Str,
     pub expression: Str,
     pub result: Str,
+    /// A short status ("Copied"), announced when it appears; empty for none.
+    pub status: Str,
     pub buttons: *const Button,
     pub button_count: usize,
     /// The focused button's index, or -1 for the window.
@@ -225,6 +227,7 @@ impl DeactivationHandler for Inactive {
 const WINDOW: NodeId = NodeId(1);
 const EXPRESSION: NodeId = NodeId(2);
 const RESULT: NodeId = NodeId(3);
+const STATUS: NodeId = NodeId(4);
 /// Buttons are numbered from here.
 const FIRST_BUTTON: u64 = 10;
 /// More than any keypad has; bounds what a request can name.
@@ -258,20 +261,30 @@ unsafe fn tree(state: &State) -> TreeUpdate {
         y1: (y + h) as f64,
     };
     let mut nodes = Vec::with_capacity(3 + buttons.len());
-    let mut children = vec![EXPRESSION, RESULT];
+    let mut children = vec![EXPRESSION, RESULT, STATUS];
 
-    // Labels speak their value.
+    // Labels speak their value. Both are polite live regions, read out
+    // when they change: the expression as operators are typed, the result
+    // as digits are.
     let mut expression = Node::new(Role::Label);
     // SAFETY: the caller's promise.
     expression.set_value(unsafe { state.expression.get() });
+    expression.set_live(Live::Polite);
     nodes.push((EXPRESSION, expression));
 
-    // A polite live region: the result is read out when it changes.
     let mut result = Node::new(Role::Label);
     // SAFETY: the caller's promise.
     result.set_value(unsafe { state.result.get() });
     result.set_live(Live::Polite);
     nodes.push((RESULT, result));
+
+    // A status message (WCAG 4.1.3): read when it appears, silent when it
+    // empties again.
+    let mut status = Node::new(Role::Status);
+    // SAFETY: the caller's promise.
+    status.set_value(unsafe { state.status.get() });
+    status.set_live(Live::Polite);
+    nodes.push((STATUS, status));
 
     for (index, button) in buttons.iter().enumerate() {
         let mut node = Node::new(Role::Button);
@@ -335,6 +348,7 @@ mod tests {
             title: s("Calculator"),
             expression: s("12 +"),
             result: s("7"),
+            status: s("Copied"),
             buttons: buttons.as_ptr(),
             button_count: buttons.len(),
             focus,
@@ -362,7 +376,10 @@ mod tests {
         assert_eq!(buttons[2].1.label(), Some("Divide"));
         let (_, window) = update.nodes.iter().find(|(id, _)| *id == WINDOW).unwrap();
         assert_eq!(window.label(), Some("Calculator"));
-        assert_eq!(window.children().len(), 5);
+        assert_eq!(window.children().len(), 6);
+        let (_, status) = update.nodes.iter().find(|(id, _)| *id == STATUS).unwrap();
+        assert_eq!(status.value(), Some("Copied"));
+        assert_eq!(status.live(), Some(Live::Polite));
     }
 
     #[test]
@@ -371,6 +388,12 @@ mod tests {
         let (_, result) = update.nodes.iter().find(|(id, _)| *id == RESULT).unwrap();
         assert_eq!(result.value(), Some("7"));
         assert_eq!(result.live(), Some(Live::Polite));
+        let (_, expression) = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == EXPRESSION)
+            .unwrap();
+        assert_eq!(expression.live(), Some(Live::Polite));
         assert_eq!(update.focus, button_node(1));
         assert_eq!(self::update(-1).focus, WINDOW);
         assert_eq!(self::update(7).focus, WINDOW, "out of range is the window");

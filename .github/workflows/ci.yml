@@ -68,7 +68,7 @@ jobs:
       # The renderer's frame budget: only meaningful optimised, so it's
       # ignored in the debug test run.
       - name: Performance budgets
-        run: cargo test --release --locked -- --ignored budget_
+        run: cargo test --release --locked -- --ignored budget_ --test-threads=1
       - name: Benchmark scripts parse
         run: |
           python3 -m py_compile bench/calcbench.py
