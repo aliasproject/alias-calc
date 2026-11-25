@@ -134,7 +134,8 @@ fn contrast(a: Color, b: Color) -> f32 {
 pub struct View<'a> {
     pub expression: &'a str,
     pub display: &'a str,
-    /// The key held down with the mouse, as (row, column).
+    /// The key drawn pressed, held with the mouse or the keyboard, as
+    /// (row, column).
     pub pressed: Option<(usize, usize)>,
 }
 

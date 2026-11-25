@@ -303,6 +303,7 @@ impl App {
             self.dirty = true;
         }
         self.repeat = None;
+        self.modifiers = Modifiers::default();
     }
 
     /// Forgets the pointer and a button it held down.
@@ -639,6 +640,9 @@ impl KeyboardHandler for App {
             self.dirty = true;
         }
         self.repeat = None;
+        // Modifiers released elsewhere aren't reported either; the next
+        // enter sends the real state.
+        self.modifiers = Modifiers::default();
     }
 
     fn press_key(
@@ -712,6 +716,11 @@ impl KeyboardHandler for App {
         _: u32,
     ) {
         self.modifiers = modifiers;
+        // A chord starting mid-repeat (Super for a shortcut) mustn't keep
+        // deleting digits.
+        if modifiers.ctrl || modifiers.alt || modifiers.logo {
+            self.repeat = None;
+        }
     }
 
     fn update_repeat_info(
@@ -754,7 +763,9 @@ impl PointerHandler for App {
                         cursor.set_shape(serial, Shape::Default);
                     }
                 }
-                PointerEventKind::Leave { .. } => {}
+                // A press that leaves without a release (the compositor
+                // took the pointer) is over.
+                PointerEventKind::Leave { .. } => self.mouse_down = None,
                 PointerEventKind::Press {
                     button: BTN_LEFT, ..
                 } => {
