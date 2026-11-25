@@ -13,6 +13,11 @@ pub fn start() {
     START.get_or_init(|| std::env::var_os("ALIAS_CALC_TRACE").map(|_| Instant::now()));
 }
 
+/// Whether `ALIAS_CALC_TRACE` is set, so callers can skip formatting.
+pub fn on() -> bool {
+    matches!(START.get(), Some(Some(_)))
+}
+
 /// Prints `what` with the time since `start`, if tracing is on.
 pub fn mark(what: &str) {
     if let Some(Some(start)) = START.get() {
