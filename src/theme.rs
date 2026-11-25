@@ -24,7 +24,11 @@ use crate::ui::Palette;
 /// Omarchy's scripts hard-code them (neither follows `XDG_STATE_HOME` or
 /// `XDG_CONFIG_HOME`).
 fn sources() -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+    // An empty HOME would make these relative to the working directory.
+    let Some(home) = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+    else {
         return Vec::new();
     };
     vec![
@@ -111,7 +115,11 @@ impl Watch {
 
     fn on(sources: &[PathBuf]) -> Option<Self> {
         let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).ok()?;
-        let flags = WatchFlags::MOVED_TO | WatchFlags::CREATE | WatchFlags::CLOSE_WRITE;
+        // A theme arrives as an entry named `theme` moved or created in
+        // `current/` (a directory or a symlink, never written in place), so
+        // file writes beside it (theme.name, theme.generation) aren't asked
+        // for and don't wake the loop.
+        let flags = WatchFlags::MOVED_TO | WatchFlags::CREATE;
         let watched = sources
             .iter()
             .filter(|dir| inotify::add_watch(&fd, dir.as_path(), flags).is_ok())
