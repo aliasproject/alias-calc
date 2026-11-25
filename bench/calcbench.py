@@ -32,7 +32,10 @@ def event_socket():
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
     if not sig:
         sys.exit("calcbench: needs a Hyprland session (HYPRLAND_INSTANCE_SIGNATURE is unset)")
-    return f"{os.environ['XDG_RUNTIME_DIR']}/hypr/{sig}/.socket2.sock"
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        sys.exit("calcbench: XDG_RUNTIME_DIR is unset")
+    return f"{runtime}/hypr/{sig}/.socket2.sock"
 
 
 def tree(pid):
@@ -172,6 +175,11 @@ def stop(proc):
             break
         except subprocess.TimeoutExpired:
             continue
+    # Helpers the app started may outlive it in its group.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     time.sleep(0.5)
 
 
