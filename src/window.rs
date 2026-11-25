@@ -586,8 +586,11 @@ impl App {
     fn screen_reader_asked(&mut self, request: a11y::Request) {
         match request {
             a11y::Request::Tree => {}
+            // A screen reader works by focus: its press keeps focus, and
+            // the ring, on the key, so its next move starts there.
             a11y::Request::Press(cell) => {
                 self.focus = Some(cell);
+                self.focus_visible = true;
                 self.press(ui::action(cell));
             }
             a11y::Request::Focus(cell) => {
@@ -611,7 +614,8 @@ impl App {
         access.update(&a11y::State {
             expression: &expression,
             display: &display,
-            focus: self.focus,
+            // The focus a screen reader hears is the one drawn.
+            focus: self.focus.filter(|_| self.focus_visible),
             keys: ui::key_rects(&self.fonts, size, self.text_scale),
             size,
         });

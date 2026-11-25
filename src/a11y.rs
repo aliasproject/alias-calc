@@ -9,7 +9,7 @@
 //! event loop polls, so the calculator's state is only ever touched on the
 //! main thread.
 
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -123,9 +123,9 @@ struct Library {
 const RTLD_NOW: i32 = 2;
 
 unsafe extern "C" {
-    fn dlopen(filename: *const i8, flags: i32) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
-    fn dlerror() -> *const i8;
+    fn dlopen(filename: *const c_char, flags: i32) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlerror() -> *const c_char;
 }
 
 /// Where the library may be: beside the binary (a build tree, or a package
@@ -142,13 +142,24 @@ fn library_paths() -> Vec<PathBuf> {
 }
 
 impl Library {
-    /// Loads the first library found. It's never unloaded: its thread runs
-    /// until the process ends.
+    /// Loads the first library that loads and speaks this ABI, so a stale
+    /// copy beside the binary doesn't hide the installed one. It's never
+    /// unloaded: its thread runs until the process ends.
     fn load() -> Result<Self, String> {
-        let path = library_paths()
-            .into_iter()
-            .find(|p| p.exists())
-            .ok_or_else(|| format!("{LIBRARY} not found"))?;
+        let mut errors = Vec::new();
+        for path in library_paths().into_iter().filter(|p| p.exists()) {
+            match Self::load_from(&path) {
+                Ok(library) => return Ok(library),
+                Err(err) => errors.push(err),
+            }
+        }
+        if errors.is_empty() {
+            errors.push(format!("{LIBRARY} not found"));
+        }
+        Err(errors.join("; "))
+    }
+
+    fn load_from(path: &std::path::Path) -> Result<Self, String> {
         let name = CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
         // SAFETY: a NUL-terminated path; the library has no constructors
         // beyond Rust's own.
@@ -383,5 +394,21 @@ mod tests {
             &PathBuf::from("/usr/lib/alias-calc").join(LIBRARY)
         );
         assert!(paths[0].ends_with(LIBRARY));
+    }
+}
+
+#[cfg(test)]
+mod budget {
+    #[test]
+    #[ignore = "a measurement: run with --release -- --ignored budget_"]
+    fn budget_screen_reader_check() {
+        let start = std::time::Instant::now();
+        for _ in 0..20 {
+            std::hint::black_box(super::screen_reader_running());
+        }
+        let each = start.elapsed() / 20;
+        println!("screen reader check: {each:?}");
+        // It runs after the first frame, before the first input is read.
+        assert!(each.as_millis() < 5, "{each:?}");
     }
 }

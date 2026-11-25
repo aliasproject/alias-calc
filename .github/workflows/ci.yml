@@ -57,6 +57,14 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --release --locked
+      # aliasOS also runs on Apple Silicon: c_char is u8 there, so FFI
+      # mistakes only show on aarch64. A type check needs no cross linker.
+      - name: Type-check for aarch64
+        env:
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          cargo check --workspace --locked --target aarch64-unknown-linux-gnu
       # The renderer's frame budget: only meaningful optimised, so it's
       # ignored in the debug test run.
       - name: Performance budgets
