@@ -892,7 +892,6 @@ impl Calc {
     }
 
     /// Whether the display shows an error.
-    #[allow(dead_code)] // Copy and paste use it (ALI-2102).
     pub fn is_error(&self) -> bool {
         self.errored
     }
@@ -904,14 +903,22 @@ impl Calc {
     /// and the return value says whether it was taken. The number is shown
     /// as the display shows it, so one with more than 16 significant digits
     /// (a long integer, say) is rounded to 16.
-    #[allow(dead_code)] // Copy and paste use it (ALI-2102).
     pub fn paste(&mut self, text: &str) -> bool {
-        let mut text: String = text
-            .trim()
-            .replace('−', "-")
-            .chars()
-            .filter(|c| *c != ' ')
-            .collect();
+        let text = text.trim().replace('−', "-");
+        // Spaces (and the no-break ones locales group digits with) are taken
+        // only as thousands separators: "1 234,5" is a number, "2026 11 25"
+        // and "555 1234" aren't.
+        let is_space = |c: char| matches!(c, ' ' | '\u{a0}' | '\u{2009}' | '\u{202f}');
+        let mut text = if text.contains(is_space) {
+            let (whole, fraction) = text.split_once(['.', ',']).unwrap_or((&text, ""));
+            // Grouping is for whole numbers only: "1 234.5 6" isn't a number.
+            if fraction.contains(is_space) || !is_grouped(&whole.replace(is_space, ",")) {
+                return false;
+            }
+            text.replace(is_space, "")
+        } else {
+            text
+        };
         let body = text.strip_prefix('-').unwrap_or(&text);
         if body.starts_with(',') || body.ends_with(',') {
             return false;
@@ -1178,7 +1185,6 @@ fn significant_digits(entry: &str) -> usize {
 /// `1,234` or `-1,234,567.89`: commas exactly every three digits. A first
 /// group of just `0` isn't a thousands group, so `0,500` is a decimal comma
 /// (0.5), not 500.
-#[allow(dead_code)] // Only `paste` uses it so far.
 fn is_grouped(text: &str) -> bool {
     let body = text.strip_prefix('-').unwrap_or(text);
     let whole = body.split_once('.').map_or(body, |(w, _)| w);
@@ -2134,6 +2140,31 @@ mod tests {
             "", "-", ".", "1.2.3", "1,2,3", "inf", "NaN", "1e", "--1", "+1", "0x10",
         ] {
             assert!(!calc.paste(junk), "{junk:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn paste_takes_spaces_only_as_thousands_separators() {
+        for (text, shown) in [
+            ("1 234", "1,234"),
+            ("1\u{a0}234,5", "1,234.5"),
+            ("1\u{202f}234\u{202f}567.89", "1,234,567.89"),
+            ("  42  ", "42"),
+            ("12 345 678", "12,345,678"),
+        ] {
+            let mut calc = Calc::new();
+            assert!(calc.paste(text), "{text:?}");
+            assert_eq!(calc.display(), shown, "{text:?}");
+        }
+        for text in [
+            "2026 11 25",
+            "555 1234",
+            "12 34",
+            "1 23",
+            "1 234.5 6",
+            "12 345,6 7",
+        ] {
+            assert!(!Calc::new().paste(text), "{text:?} isn't a number");
         }
     }
 
