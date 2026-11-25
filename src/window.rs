@@ -3,8 +3,8 @@
 //! `viewporter`.
 //!
 //! Everything runs on the one thread. The loop blocks in `poll` on the
-//! Wayland socket and only wakes when the compositor sends something, so an
-//! idle window costs no CPU at all.
+//! Wayland socket and only wakes when the compositor sends something (or a
+//! held Backspace is due to repeat), so an idle window costs no CPU at all.
 
 use std::error::Error;
 use std::time::{Duration, Instant};
@@ -143,6 +143,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         drawn: false,
         keyboard_seat: None,
         pointer_seat: None,
+        input_seat: None,
         dirty: false,
         exit: false,
     };
@@ -153,12 +154,22 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 type Queue = smithay_client_toolkit::reexports::client::EventQueue<App>;
 
 /// Dispatch, draw if anything changed, then sleep until the compositor
-/// writes to the socket. No timeouts: an idle window never wakes.
+/// writes to the socket. The only timeout is a held Backspace's next
+/// repeat, so an idle window never wakes.
 fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
     loop {
         queue.dispatch_pending(app)?;
         if app.exit {
             return Ok(());
+        }
+        // A busy socket (pointer motion while Backspace is held) would keep
+        // poll from ever timing out, so a due repeat fires here too.
+        if app
+            .repeat
+            .as_ref()
+            .is_some_and(|r| r.next <= Instant::now())
+        {
+            app.repeat_tick();
         }
         if app.dirty && app.configured {
             app.draw()?;
@@ -199,9 +210,9 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             }
         });
         match poll(&mut fds, timeout.as_ref()) {
+            // The repeat's time came: the top of the loop fires it.
             Ok(0) => {
                 drop(guard);
-                app.repeat_tick();
                 continue;
             }
             Ok(_) => {}
@@ -267,6 +278,8 @@ struct App {
     /// Seats whose keyboard and pointer wait for the first frame.
     keyboard_seat: Option<wl_seat::WlSeat>,
     pointer_seat: Option<wl_seat::WlSeat>,
+    /// The seat the keyboard and pointer were bound from.
+    input_seat: Option<wl_seat::WlSeat>,
     /// Something changed since the last frame.
     dirty: bool,
     exit: bool,
@@ -280,7 +293,34 @@ struct Repeat {
 }
 
 impl App {
+    /// Forgets the keyboard and anything it held: a lit key, a repeat.
+    fn drop_keyboard(&mut self) {
+        self.keyboard_seat = None;
+        if let Some(keyboard) = self.keyboard.take() {
+            keyboard.release();
+        }
+        if self.key_down.take().is_some() {
+            self.dirty = true;
+        }
+        self.repeat = None;
+    }
+
+    /// Forgets the pointer and a button it held down.
+    fn drop_pointer(&mut self) {
+        self.pointer_seat = None;
+        if let Some(cursor) = self.cursor.take() {
+            cursor.destroy();
+        }
+        if let Some(pointer) = self.pointer.take() {
+            pointer.release();
+        }
+        if self.mouse_down.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
     fn bind_keyboard(&mut self, qh: &QueueHandle<Self>, seat: &wl_seat::WlSeat) {
+        self.input_seat = Some(seat.clone());
         match self.seats.get_keyboard(qh, seat, None) {
             Ok(keyboard) => self.keyboard = Some(keyboard),
             Err(err) => eprintln!("alias-calc: no keyboard: {err}"),
@@ -288,6 +328,7 @@ impl App {
     }
 
     fn bind_pointer(&mut self, qh: &QueueHandle<Self>, seat: &wl_seat::WlSeat) {
+        self.input_seat = Some(seat.clone());
         match self.seats.get_pointer(qh, seat) {
             Ok(pointer) => {
                 self.cursor = self
@@ -550,31 +591,26 @@ impl SeatHandler for App {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Keyboard {
-            self.keyboard_seat = None;
-        }
-        if capability == Capability::Pointer {
-            self.pointer_seat = None;
-        }
-        if capability == Capability::Keyboard
-            && let Some(keyboard) = self.keyboard.take()
-        {
-            keyboard.release();
-            self.key_down = None;
-            self.repeat = None;
-        }
-        if capability == Capability::Pointer
-            && let Some(pointer) = self.pointer.take()
-        {
-            if let Some(cursor) = self.cursor.take() {
-                cursor.destroy();
-            }
-            pointer.release();
-            self.mouse_down = None;
+        match capability {
+            Capability::Keyboard => self.drop_keyboard(),
+            Capability::Pointer => self.drop_pointer(),
+            _ => {}
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    /// SCTK reports a removed seat only here, without removing its
+    /// capabilities first, so the same teardown happens.
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if self.keyboard_seat.as_ref() == Some(&seat) || self.input_seat.as_ref() == Some(&seat) {
+            self.drop_keyboard();
+        }
+        if self.pointer_seat.as_ref() == Some(&seat) || self.input_seat.as_ref() == Some(&seat) {
+            self.drop_pointer();
+        }
+        if self.input_seat.as_ref() == Some(&seat) {
+            self.input_seat = None;
+        }
+    }
 }
 
 impl KeyboardHandler for App {
@@ -692,6 +728,9 @@ impl KeyboardHandler for App {
             )),
             RepeatInfo::Disable => None,
         };
+        if self.repeat_rate.is_none() {
+            self.repeat = None;
+        }
     }
 }
 
