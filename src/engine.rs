@@ -321,6 +321,9 @@ impl Num {
     /// The display text, without thousands separators.
     fn format(self) -> String {
         match self {
+            // A decimal that came back from f64 carries its error, so it's
+            // shown at f64's 15 digits, like a Float.
+            Num::Dec(d, Level::Approx) => format_decimal(d, FLOAT_DIGITS),
             Num::Dec(d, _) => format_exact(d),
             Num::Float(f) => format_float(f),
         }
@@ -463,6 +466,10 @@ impl Wide {
     }
 
     fn mul_pow10(mut self, mut k: u32) -> Option<Wide> {
+        // Zero times anything is zero; don't loop through a huge exponent.
+        if self.0 == [0; 4] {
+            return Some(self);
+        }
         while k > 0 {
             let step = k.min(19);
             self = self.mul_u64(10u64.pow(step))?;
@@ -619,6 +626,11 @@ fn power(base: Decimal, mut n: u64) -> Option<(Decimal, bool)> {
 
 /// Rounds to 16 significant digits and lays the digits out.
 fn format_exact(value: Decimal) -> String {
+    format_decimal(value, EXACT_DIGITS)
+}
+
+/// Rounds to `precision` significant digits and lays the digits out.
+fn format_decimal(value: Decimal, precision: u32) -> String {
     if value.is_zero() {
         return "0".into();
     }
@@ -628,12 +640,12 @@ fn format_exact(value: Decimal) -> String {
     // value = digits × 10^(−scale), so the first digit's power of ten is:
     let exponent = all.len() as i32 - 1 - normal.scale() as i32;
     // Rounded by hand: `round_sf` can't round a value near Decimal::MAX.
-    let (digits, carried) = round_digits(&all, EXACT_DIGITS as usize);
+    let (digits, carried) = round_digits(&all, precision as usize);
     layout(
         mantissa < 0,
         &digits,
         exponent + i32::from(carried),
-        EXACT_DIGITS,
+        precision,
     )
 }
 
@@ -1279,6 +1291,25 @@ mod tests {
         let mut calc = Calc::new();
         press(&mut calc, keys);
         calc.display()
+    }
+
+    /// A decimal back from f64 shows f64's 15 digits, so its rounding error
+    /// doesn't: money divided by a large number and multiplied back.
+    #[test]
+    fn approx_decimals_hide_f64_noise() {
+        assert_eq!(shows("8 . 8 8 ÷ 8 8 9 5 0 7 × 8 8 9 5 0 7 ="), "8.88");
+        assert_eq!(shows("1 . 4 3 ÷ 3 1 2 5 5 4 × 1 2 5 0 2 1 6 ="), "5.72");
+        assert_eq!(shows("5 8 1 . 2 ÷ 5 8 1 4 3 2 × 5 8 1 4 3 2 0 ="), "5,812");
+    }
+
+    /// A pasted zero with a huge exponent is a quick, exact 0.
+    #[test]
+    fn pasted_zero_with_a_huge_exponent() {
+        let start = std::time::Instant::now();
+        let mut calc = Calc::new();
+        assert!(calc.paste("0e4294967295"));
+        assert_eq!(calc.display(), "0");
+        assert!(start.elapsed().as_millis() < 50, "{:?}", start.elapsed());
     }
 
     #[test]
