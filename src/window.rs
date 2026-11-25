@@ -161,7 +161,7 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         if app.dirty && app.configured {
-            app.draw();
+            app.draw()?;
             if app.keyboard_seat.is_some() || app.pointer_seat.is_some() {
                 // Send the first frame on its own: a new keyboard makes the
                 // compositor build and send a keymap, and that shouldn't
@@ -170,18 +170,25 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
                 app.bind_input(&queue.handle());
             }
         }
-        match queue.flush() {
-            Ok(()) => {}
-            Err(WaylandError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+        // A full socket leaves requests queued; then wait until it can take
+        // more as well as for events.
+        let unsent = match queue.flush() {
+            Ok(()) => false,
+            Err(WaylandError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => true,
             Err(err) => return Err(err.into()),
-        }
+        };
 
         // Events already queued mean there's nothing to wait for.
         let Some(guard) = queue.prepare_read() else {
             continue;
         };
         let fd = guard.connection_fd();
-        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        let flags = if unsent {
+            PollFlags::IN | PollFlags::OUT
+        } else {
+            PollFlags::IN
+        };
+        let mut fds = [PollFd::new(&fd, flags)];
         // Only a held Backspace sets a timeout; otherwise sleep until the
         // compositor sends something.
         let timeout = app.repeat.as_ref().map(|r| {
@@ -200,6 +207,11 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             Ok(_) => {}
             Err(Errno::INTR) => continue,
             Err(err) => return Err(err.into()),
+        }
+        if !fds[0].revents().contains(PollFlags::IN) {
+            // Only writable: go round and flush.
+            drop(guard);
+            continue;
         }
         match guard.read() {
             Ok(n) => {
@@ -322,7 +334,13 @@ impl App {
     fn button_under_pointer(&self) -> Option<(usize, usize)> {
         let (w, h) = self.size;
         let (x, y) = self.mouse_at;
-        ui::hit_test(&self.fonts, w as f32, h as f32, x as f32, y as f32)
+        let scale = self.pixel_size().0 as f32 / w as f32;
+        ui::hit_test(
+            &self.fonts,
+            (w as f32, h as f32),
+            scale,
+            (x as f32, y as f32),
+        )
     }
 
     /// The buffer's size in pixels for the current logical size and scale.
@@ -347,7 +365,10 @@ impl App {
         mouse.or(self.key_down.and_then(|(_, cell)| cell))
     }
 
-    fn draw(&mut self) {
+    /// Draws and commits a frame. An error means the window can't be shown
+    /// (no memory for the buffer), which ends the app rather than leaving it
+    /// running unseen.
+    fn draw(&mut self) -> Result<(), Box<dyn Error>> {
         self.dirty = false;
         let expression = self.calc.expression();
         let display = self.calc.display();
@@ -367,17 +388,14 @@ impl App {
                 .create_buffer(pw as i32, ph as i32, stride, wl_shm::Format::Argb8888)
             {
                 Ok((buffer, _)) => self.buffer = Some(buffer),
-                Err(err) => {
-                    eprintln!("alias-calc: can't allocate a {pw}x{ph} buffer: {err}");
-                    return;
-                }
+                Err(err) => return Err(format!("can't allocate a {pw}x{ph} buffer: {err}").into()),
             }
         }
         let Some(buffer) = self.buffer.as_ref() else {
-            return;
+            return Err("no buffer".into());
         };
         let Some(canvas) = self.pool.canvas(buffer) else {
-            return;
+            return Err("the new buffer is busy".into());
         };
 
         let scale = pw as f32 / self.size.0 as f32;
@@ -397,15 +415,15 @@ impl App {
             Scaling::Integer(scale) => surface.set_buffer_scale(*scale as i32),
         }
         surface.damage_buffer(0, 0, pw as i32, ph as i32);
-        if let Err(err) = buffer.attach_to(surface) {
-            eprintln!("alias-calc: can't attach the buffer: {err}");
-            return;
-        }
+        buffer
+            .attach_to(surface)
+            .map_err(|err| format!("can't attach the buffer: {err}"))?;
         self.window.commit();
         self.drawn = true;
         if trace::on() {
             trace::mark(&format!("frame committed ({pw}x{ph} px)"));
         }
+        Ok(())
     }
 }
 
@@ -481,10 +499,9 @@ impl WindowHandler for App {
         if !self.configured {
             trace::mark("configured");
         }
-        let (w, h) = match configure.new_size {
-            (Some(w), Some(h)) => (w.get(), h.get()),
-            _ => self.size,
-        };
+        // Each axis the compositor leaves at 0 is ours to choose.
+        let w = configure.new_size.0.map_or(self.size.0, |w| w.get());
+        let h = configure.new_size.1.map_or(self.size.1, |h| h.get());
         self.size = (w.max(1), h.max(1));
         self.configured = true;
         // Every configure needs a commit to answer it, even when the size

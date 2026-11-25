@@ -91,7 +91,8 @@ pub struct Palette {
 
 impl Palette {
     pub fn new(background: Color, foreground: Color, accent: Color) -> Self {
-        let dark = background.luminance() < 0.5;
+        // 0.18 is where a color contrasts equally with black and white.
+        let dark = background.luminance() < 0.18;
         let key = background.mix(foreground, if dark { 0.08 } else { 0.06 });
         let key_pressed = background.mix(foreground, if dark { 0.18 } else { 0.14 });
         // Whichever of background and foreground reads better on the accent.
@@ -144,6 +145,8 @@ const RADIUS: f32 = 4.0;
 const EXPRESSION_SIZE: f32 = 18.0;
 const DISPLAY_SIZE: f32 = 60.0;
 const KEY_SIZE: f32 = 24.0;
+const EXPRESSION_MIN_SIZE: f32 = 13.0;
+const DISPLAY_MIN_SIZE: f32 = 16.0;
 /// The share of the height above the keypad.
 const DISPLAY_SHARE: f32 = 0.3;
 
@@ -177,7 +180,19 @@ impl Layout {
         }
     }
 
-    /// A key's rectangle: x, y, width, height.
+    /// A key's rectangle in buffer pixels, snapped to whole pixels so its
+    /// straight edges stay crisp. Drawing and hit-testing both use this.
+    fn key_pixels(&self, row: usize, col: usize, scale: f32) -> (f32, f32, f32, f32) {
+        let (x, y, w, h) = self.key_rect(row, col);
+        let (px, py) = ((x * scale).round(), (y * scale).round());
+        let (pw, ph) = (
+            ((x + w) * scale).round() - px,
+            ((y + h) * scale).round() - py,
+        );
+        (px, py, pw, ph)
+    }
+
+    /// A key's rectangle in logical pixels: x, y, width, height.
     fn key_rect(&self, row: usize, col: usize) -> (f32, f32, f32, f32) {
         let x = self.grid.0 + col as f32 * (self.key.0 + GAP);
         let y = self.grid.1 + row as f32 * (self.key.1 + GAP);
@@ -198,19 +213,34 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, palette: &Palette, view: &Vi
     let max_text = s(width - 2.0 * PADDING);
     let right = s(width - PADDING);
     if !view.expression.is_empty() {
-        let size = fonts.fit(Face::Regular, s(EXPRESSION_SIZE), view.expression, max_text);
-        let w = fonts.width(Face::Regular, size, view.expression);
+        let size = fonts.fit(
+            Face::Regular,
+            s(EXPRESSION_SIZE),
+            s(EXPRESSION_MIN_SIZE),
+            view.expression,
+            max_text,
+        );
+        let expression = fonts.elide_start(Face::Regular, size, view.expression, max_text);
+        let w = fonts.width(Face::Regular, size, &expression);
         let baseline = s(layout.expression_baseline);
         canvas.text(
             fonts,
             Face::Regular,
             size,
-            view.expression,
+            &expression,
             (right - w, baseline),
             palette.muted,
         );
     }
-    let size = fonts.fit(Face::Light, s(DISPLAY_SIZE), view.display, max_text);
+    // The engine keeps a number to 16 digits plus separators and sign, which
+    // fits at the minimum size in the narrowest window.
+    let size = fonts.fit(
+        Face::Light,
+        s(DISPLAY_SIZE),
+        s(DISPLAY_MIN_SIZE),
+        view.display,
+        max_text,
+    );
     let w = fonts.width(Face::Light, size, view.display);
     let baseline = s(layout.display_baseline);
     canvas.text(
@@ -225,7 +255,6 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, palette: &Palette, view: &Vi
     // The keypad.
     for (row, labels) in KEYS.iter().enumerate() {
         for (col, &label) in labels.iter().enumerate() {
-            let (x, y, w, h) = layout.key_rect(row, col);
             let pressed = view.pressed == Some((row, col));
             let (fill, ink) = match role(label) {
                 Role::Equals => (
@@ -250,9 +279,7 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, palette: &Palette, view: &Vi
                     (fill, ink)
                 }
             };
-            // Snap keys to whole pixels so their straight edges stay crisp.
-            let (px, py) = (s(x).round(), s(y).round());
-            let (pw, ph) = (s(x + w).round() - px, s(y + h).round() - py);
+            let (px, py, pw, ph) = layout.key_pixels(row, col, scale);
             canvas.rounded_rect(px, py, pw, ph, s(RADIUS), fill);
 
             // JetBrains Mono draws × ÷ − + small next to its digits.
@@ -277,12 +304,21 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, palette: &Palette, view: &Vi
     }
 }
 
-/// The key at logical position (x, y), as (row, column).
-pub fn hit_test(fonts: &Fonts, width: f32, height: f32, x: f32, y: f32) -> Option<(usize, usize)> {
+/// The key at logical position (x, y), as (row, column), in a window of
+/// `width` by `height` logical pixels drawn at `scale`. It tests the same
+/// pixel-snapped rectangles that are drawn, so a click on a key's edge pixel
+/// presses that key.
+pub fn hit_test(
+    fonts: &Fonts,
+    (width, height): (f32, f32),
+    scale: f32,
+    (x, y): (f32, f32),
+) -> Option<(usize, usize)> {
     let layout = Layout::new(fonts, width, height);
+    let (x, y) = (x * scale, y * scale);
     for (row, labels) in KEYS.iter().enumerate() {
         for col in 0..labels.len() {
-            let (kx, ky, kw, kh) = layout.key_rect(row, col);
+            let (kx, ky, kw, kh) = layout.key_pixels(row, col, scale);
             if x >= kx && x < kx + kw && y >= ky && y < ky + kh {
                 return Some((row, col));
             }
@@ -302,16 +338,70 @@ mod tests {
         let (w, h) = (320.0, 480.0);
         let layout = Layout::new(&fonts, w, h);
         let (x, y, kw, kh) = layout.key_rect(0, 0);
-        assert_eq!(hit_test(&fonts, w, h, x + 1.0, y + 1.0), Some((0, 0)));
+        assert_eq!(
+            hit_test(&fonts, (w, h), 1.0, (x + 1.0, y + 1.0)),
+            Some((0, 0))
+        );
         let (x, y, ..) = layout.key_rect(4, 3);
-        assert_eq!(hit_test(&fonts, w, h, x + 1.0, y + 1.0), Some((4, 3)));
+        assert_eq!(
+            hit_test(&fonts, (w, h), 1.0, (x + 1.0, y + 1.0)),
+            Some((4, 3))
+        );
         // Between the first two keys of the first row.
         assert_eq!(
-            hit_test(&fonts, w, h, PADDING + kw + GAP / 2.0, y - kh),
+            hit_test(&fonts, (w, h), 1.0, (PADDING + kw + GAP / 2.0, y - kh)),
             None
         );
         // The display area.
-        assert_eq!(hit_test(&fonts, w, h, w / 2.0, PADDING), None);
+        assert_eq!(hit_test(&fonts, (w, h), 1.0, (w / 2.0, PADDING)), None);
+    }
+
+    #[test]
+    fn every_drawn_pixel_of_a_key_hits_that_key() {
+        let fonts = Fonts::load();
+        let (w, h) = (320.0, 480.0);
+        let layout = Layout::new(&fonts, w, h);
+        for scale in [1.0, 1.25, 1.5, 1.75] {
+            for (row, col) in [(0, 0), (2, 1), (4, 3)] {
+                let (px, py, pw, ph) = layout.key_pixels(row, col, scale);
+                // The four corner pixels of the drawn key, at their centres.
+                for (x, y) in [
+                    (px, py),
+                    (px + pw - 1.0, py),
+                    (px, py + ph - 1.0),
+                    (px + pw - 1.0, py + ph - 1.0),
+                ] {
+                    let at = ((x + 0.5) / scale, (y + 0.5) / scale);
+                    assert_eq!(
+                        hit_test(&fonts, (w, h), scale, at),
+                        Some((row, col)),
+                        "scale {scale}, pixel {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_longest_number_fits_the_narrowest_window() {
+        let fonts = Fonts::load();
+        // 16 digits with separators and a sign, the most the engine shows
+        // (exponent forms like -1.234567890123457e+19 are as long).
+        let longest = "-9,999,999,999,999,999";
+        for scale in [1.0, 1.5, 2.0] {
+            let max = (260.0 - 2.0 * PADDING) * scale;
+            let size = fonts.fit(
+                Face::Light,
+                DISPLAY_SIZE * scale,
+                DISPLAY_MIN_SIZE * scale,
+                longest,
+                max,
+            );
+            assert!(
+                fonts.width(Face::Light, size, longest) <= max,
+                "scale {scale}"
+            );
+        }
     }
 
     #[test]
