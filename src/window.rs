@@ -49,6 +49,7 @@ use wayland_protocols::wp::viewporter::client::{
 use crate::engine::{Calc, Key};
 use crate::input;
 use crate::render::{Canvas, Fonts};
+use crate::theme;
 use crate::trace;
 use crate::ui::{self, Palette, View};
 
@@ -113,6 +114,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // Parse the fonts while the compositor works on the configure.
     let fonts = Fonts::load();
     trace::mark("fonts loaded");
+    let palette = theme::load();
+    let theme_watch = theme::Watch::new();
+    trace::mark("theme read");
 
     let (w, h) = DEFAULT_SIZE;
     let pool = SlotPool::new((w * h * 4) as usize, &shm)?;
@@ -136,7 +140,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         pool,
         buffer: None,
         fonts,
-        palette: Palette::default(),
+        palette,
         size: DEFAULT_SIZE,
         scaling,
         configured: false,
@@ -144,14 +148,19 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         exit: false,
     };
 
-    event_loop(&mut queue, &mut app)
+    event_loop(&mut queue, &mut app, theme_watch.as_ref())
 }
 
 type Queue = smithay_client_toolkit::reexports::client::EventQueue<App>;
 
 /// Dispatch, draw if anything changed, then sleep until the compositor
 /// writes to the socket. No timeouts: an idle window never wakes.
-fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
+/// `theme` is None when there's no theme to follow.
+fn event_loop(
+    queue: &mut Queue,
+    app: &mut App,
+    theme: Option<&theme::Watch>,
+) -> Result<(), Box<dyn Error>> {
     loop {
         queue.dispatch_pending(app)?;
         if app.exit {
@@ -171,7 +180,7 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             continue;
         };
         let fd = guard.connection_fd();
-        let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+        let theme_fd = theme.map(|w| w.fd());
         // Only a held Backspace sets a timeout; otherwise sleep until the
         // compositor sends something.
         let timeout = app.repeat.as_ref().map(|r| {
@@ -181,6 +190,14 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
                 tv_nsec: wait.subsec_nanos() as _,
             }
         });
+        let mut fds = [
+            PollFd::new(&fd, PollFlags::IN),
+            // Without a theme to follow, an fd poll ignores (negative).
+            match &theme_fd {
+                Some(theme_fd) => PollFd::new(theme_fd, PollFlags::IN),
+                None => PollFd::from_borrowed_fd(fd, PollFlags::empty()),
+            },
+        ];
         match poll(&mut fds, timeout.as_ref()) {
             Ok(0) => {
                 drop(guard);
@@ -190,6 +207,16 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             Ok(_) => {}
             Err(Errno::INTR) => continue,
             Err(err) => return Err(err.into()),
+        }
+        let wayland_ready = !fds[0].revents().is_empty();
+        let theme_ready = theme_fd.is_some() && !fds[1].revents().is_empty();
+        drop(theme_fd);
+        if theme_ready && theme.is_some_and(|w| w.changed()) {
+            app.reload_theme();
+        }
+        if !wayland_ready {
+            drop(guard);
+            continue;
         }
         match guard.read() {
             Ok(n) => {
@@ -256,6 +283,15 @@ impl App {
     fn press(&mut self, key: Key) {
         self.calc.press(key);
         self.dirty = true;
+    }
+
+    fn reload_theme(&mut self) {
+        let palette = theme::load();
+        if palette != self.palette {
+            self.palette = palette;
+            self.dirty = true;
+            trace::mark("theme changed");
+        }
     }
 
     fn repeat_tick(&mut self) {

@@ -6,6 +6,7 @@
 mod engine;
 mod input;
 mod render;
+mod theme;
 mod trace;
 mod ui;
 mod window;
