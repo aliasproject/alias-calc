@@ -371,6 +371,9 @@ impl App {
             self.dirty = true;
         }
         self.repeat = None;
+        // The data device belongs to the keyboard's seat; a keyboard bound
+        // later (maybe on another seat) makes a new one.
+        self.data_device = None;
     }
 
     /// Forgets the pointer and a button it held down.
@@ -427,7 +430,10 @@ impl App {
         let Some(format) = offer.with_mime_types(clipboard::pick_format) else {
             return;
         };
-        self.paste = offer.receive(format).ok().and_then(Paste::new);
+        // A paste that can't start leaves one still being read alone.
+        if let Some(paste) = offer.receive(format).ok().and_then(Paste::new) {
+            self.paste = Some(paste);
+        }
     }
 
     /// Takes a paste's read result: keeps reading, or pastes the text.
@@ -779,12 +785,23 @@ impl KeyboardHandler for App {
     ) {
         let m = self.modifiers;
         // Ctrl+C / Super+C copy and Ctrl+V / Super+V paste, as in omacalc.
+        // aliasOS's universal Super+C/V reach apps as Ctrl+C/V, or as
+        // Ctrl+Insert / Shift+Insert for some, so those work too.
         if (m.ctrl || m.logo) && !m.alt && !m.shift {
             match event.keysym {
-                Keysym::c | Keysym::C => self.copy(qh, serial),
+                Keysym::c | Keysym::C | Keysym::Insert | Keysym::KP_Insert => self.copy(qh, serial),
                 Keysym::v | Keysym::V => self.paste(),
                 _ => {}
             }
+            return;
+        }
+        if m.shift
+            && !m.ctrl
+            && !m.alt
+            && !m.logo
+            && matches!(event.keysym, Keysym::Insert | Keysym::KP_Insert)
+        {
+            self.paste();
             return;
         }
         // Other chords belong to the compositor, never to the keypad.
