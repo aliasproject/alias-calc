@@ -89,18 +89,21 @@ pub struct Palette {
     pub notice: Color,
     /// ÷ × − +: the accent, made readable on the keys.
     pub operator: Color,
-    /// The expression line and the function keys' labels.
+    /// The expression line.
     pub muted: Color,
+    /// C ± % ⌫: muted, made readable on the keys.
+    pub function: Color,
     pub key: Color,
     pub key_pressed: Color,
     /// The label on the accent-filled `=` key.
     pub on_accent: Color,
 }
 
-/// WCAG 2.2 AA: text needs 4.5:1; large text (24 px and up, which every key
-/// label and the result are) needs 3:1.
+/// WCAG 2.2 AA for text: 4.5:1. Large text (24 px and up) only needs 3:1,
+/// but nothing here is large at every size: the result shrinks to fit a long
+/// number, and key labels drop to ~22 px at the minimum window. So all text
+/// gets 4.5:1.
 const TEXT_CONTRAST: f32 = 4.5;
-const LARGE_CONTRAST: f32 = 3.0;
 
 const WHITE: Color = Color::rgb(255, 255, 255);
 const BLACK: Color = Color::rgb(0, 0, 0);
@@ -111,45 +114,112 @@ impl Palette {
         let dark = background.luminance() < 0.18;
         let key = background.mix(foreground, if dark { 0.08 } else { 0.06 });
         let key_pressed = background.mix(foreground, if dark { 0.18 } else { 0.14 });
-        let accent_pressed = accent.mix(background, 0.25);
-        // Whichever of background and foreground reads better on the accent.
-        let on_accent = if contrast(accent, background) >= contrast(accent, foreground) {
-            background
+        // Whichever of background and foreground reads better on the accent,
+        // made readable on it.
+        let on_accent = readable(
+            if contrast(accent, background) >= contrast(accent, foreground) {
+                background
+            } else {
+                foreground
+            },
+            &[accent],
+            TEXT_CONTRAST,
+        );
+        // A held = moves away from its label (lighter under a dark label,
+        // darker under a light one), so holding it only raises the label's
+        // contrast. Moving towards the background could land on a mid-tone
+        // where neither a dark nor a light label reaches 4.5:1.
+        let away = if on_accent.luminance() < accent.luminance() {
+            WHITE
         } else {
-            foreground
+            BLACK
         };
+        let accent_pressed = accent.mix(away, 0.25);
         // Every text colour is checked against every fill it's drawn on, and
         // moved towards white or black until it passes, so a theme nobody
-        // tried still meets AA. Most themes need no change.
-        let keys = [key, key_pressed];
+        // tried still meets AA. Most themes need no change. 65% of the way to
+        // the foreground clears 4.5:1 on the background for every aliasOS
+        // theme as it is.
+        let muted = readable(
+            background.mix(foreground, 0.65),
+            &[background],
+            TEXT_CONTRAST,
+        );
+        let notice = readable(accent, &[background], TEXT_CONTRAST);
+        // On a mid-tone background a key fill can sit where no label reaches
+        // 4.5:1 however it's moved. Then the fills step away from the text
+        // (darker under light text, lighter under dark) until every label
+        // passes; on real themes the first try already does.
+        let text_is_light =
+            readable(foreground, &[background], TEXT_CONTRAST).luminance() > background.luminance();
+        let away_from_text = if text_is_light { BLACK } else { WHITE };
+        let (mut key, mut key_pressed) = (key, key_pressed);
+        let mut labels = KeyLabels::on(background, foreground, muted, accent, key, key_pressed);
+        for _ in 0..20 {
+            if labels.pass(background, key, key_pressed) {
+                break;
+            }
+            key = key.mix(away_from_text, 0.1);
+            key_pressed = key_pressed.mix(away_from_text, 0.1);
+            labels = KeyLabels::on(background, foreground, muted, accent, key, key_pressed);
+        }
         Self {
             background,
-            foreground: readable(foreground, &[background, key, key_pressed], LARGE_CONTRAST),
+            foreground: labels.foreground,
             accent,
             accent_pressed,
-            notice: readable(accent, &[background], TEXT_CONTRAST),
-            operator: readable(accent, &keys, LARGE_CONTRAST),
-            // 65% of the way to the foreground clears 4.5:1 on every aliasOS
-            // theme as it is; `readable` covers the rest.
-            muted: readable(
-                readable(
-                    background.mix(foreground, 0.65),
-                    &[background],
-                    TEXT_CONTRAST,
-                ),
-                &[background, key, key_pressed],
-                LARGE_CONTRAST,
-            ),
+            notice,
+            operator: labels.operator,
+            muted,
+            function: labels.function,
             key,
             key_pressed,
-            on_accent: readable(on_accent, &[accent, accent_pressed], LARGE_CONTRAST),
+            on_accent,
         }
+    }
+}
+
+/// The text drawn on keys (and, for the result, on the background), each
+/// made readable on every fill it sits on.
+struct KeyLabels {
+    /// Digits and the result.
+    foreground: Color,
+    function: Color,
+    operator: Color,
+}
+
+impl KeyLabels {
+    fn on(
+        background: Color,
+        foreground: Color,
+        muted: Color,
+        accent: Color,
+        key: Color,
+        pressed: Color,
+    ) -> Self {
+        Self {
+            foreground: readable(foreground, &[background, key, pressed], TEXT_CONTRAST),
+            function: readable(muted, &[key, pressed], TEXT_CONTRAST),
+            operator: readable(accent, &[key, pressed], TEXT_CONTRAST),
+        }
+    }
+
+    fn pass(&self, background: Color, key: Color, pressed: Color) -> bool {
+        let ok = |ink: Color, grounds: &[Color]| {
+            grounds.iter().all(|&g| contrast(ink, g) >= TEXT_CONTRAST)
+        };
+        ok(self.foreground, &[background, key, pressed])
+            && ok(self.function, &[key, pressed])
+            && ok(self.operator, &[key, pressed])
     }
 }
 
 /// `ink`, or the nearest colour towards white or black that has at least
 /// `min` contrast with every one of `grounds`. Whichever direction needs the
-/// smaller step wins; if neither gets there, the better of white and black.
+/// smaller step wins. If neither gets there it returns the better of white
+/// and black; for 4.5:1 that can't happen with the grounds used here (white
+/// or black reaches 4.58:1 on any one colour, and each set is close
+/// together), which `any_theme_meets_aa` checks over 20,000 random themes.
 fn readable(ink: Color, grounds: &[Color], min: f32) -> Color {
     let worst = |c: Color| {
         grounds
@@ -202,7 +272,8 @@ pub struct View<'a> {
     /// The key drawn pressed, held with the mouse or the keyboard, as
     /// (row, column).
     pub pressed: Option<(usize, usize)>,
-    /// A short message ("Copied") shown in the accent color in place of
+    /// A short message ("Copied") shown in the notice colour (the accent,
+    /// made readable) in place of
     /// the expression line.
     pub notice: Option<&'a str>,
 }
@@ -372,7 +443,7 @@ pub fn draw(
                     };
                     let ink = match other {
                         Role::Operator => palette.operator,
-                        Role::Function => palette.muted,
+                        Role::Function => palette.function,
                         _ => palette.foreground,
                     };
                     (fill, ink)
@@ -617,42 +688,25 @@ mod tests {
         }
     }
 
-    /// Every text colour against every fill it's drawn on.
+    /// Every text colour against every fill it's drawn on, at 4.5:1.
     fn assert_aa(p: &Palette, theme: &str) {
-        let check = |what: &str, ink: Color, ground: Color, min: f32| {
+        let check = |what: &str, ink: Color, ground: Color| {
             let c = contrast(ink, ground);
-            assert!(c >= min, "{theme}: {what} is {c:.2}:1, needs {min}:1");
+            assert!(
+                c >= TEXT_CONTRAST,
+                "{theme}: {what} is {c:.2}:1, needs 4.5:1"
+            );
         };
-        check("expression line", p.muted, p.background, TEXT_CONTRAST);
-        check("Copied", p.notice, p.background, TEXT_CONTRAST);
-        check("result", p.foreground, p.background, LARGE_CONTRAST);
+        check("expression line", p.muted, p.background);
+        check("Copied", p.notice, p.background);
+        check("result", p.foreground, p.background);
         for (fill, name) in [(p.key, "key"), (p.key_pressed, "held key")] {
-            check(
-                &format!("digit on {name}"),
-                p.foreground,
-                fill,
-                LARGE_CONTRAST,
-            );
-            check(
-                &format!("function label on {name}"),
-                p.muted,
-                fill,
-                LARGE_CONTRAST,
-            );
-            check(
-                &format!("operator on {name}"),
-                p.operator,
-                fill,
-                LARGE_CONTRAST,
-            );
+            check(&format!("digit on {name}"), p.foreground, fill);
+            check(&format!("function label on {name}"), p.function, fill);
+            check(&format!("operator on {name}"), p.operator, fill);
         }
-        check("= label", p.on_accent, p.accent, LARGE_CONTRAST);
-        check(
-            "= label held",
-            p.on_accent,
-            p.accent_pressed,
-            LARGE_CONTRAST,
-        );
+        check("= label", p.on_accent, p.accent);
+        check("= label held", p.on_accent, p.accent_pressed);
     }
 
     #[test]
@@ -668,10 +722,11 @@ mod tests {
         ] {
             let p = Palette::new(hex(bg), hex(fg), hex(accent));
             assert_aa(&p, name);
-            // These themes already pass: only muted moves.
+            // On these themes the result, Copied and the expression line keep
+            // their colours; operators and function labels may lift on the
+            // keys, which are lighter than the background.
             assert_eq!(p.foreground, hex(fg), "{name}");
             assert_eq!(p.notice, hex(accent), "{name}");
-            assert_eq!(p.operator, hex(accent), "{name}");
             assert_eq!(p.muted, hex(bg).mix(hex(fg), 0.65), "{name}");
         }
         assert_eq!(Palette::default().muted, hex("#868dad"));
