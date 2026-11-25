@@ -137,6 +137,9 @@ pub struct View<'a> {
     /// The key drawn pressed, held with the mouse or the keyboard, as
     /// (row, column).
     pub pressed: Option<(usize, usize)>,
+    /// A short message ("Copied") shown in the accent color in place of
+    /// the expression line.
+    pub notice: Option<&'a str>,
 }
 
 // Logical sizes.
@@ -220,7 +223,25 @@ pub fn draw(
     // The expression line and the result, right-aligned.
     let max_text = s(width - 2.0 * PADDING);
     let right = s(width - PADDING);
-    if !view.expression.is_empty() {
+    if let Some(notice) = view.notice {
+        let size = fonts.fit(
+            Face::Regular,
+            s(EXPRESSION_SIZE),
+            s(EXPRESSION_MIN_SIZE),
+            notice,
+            max_text,
+        );
+        let w = fonts.width(Face::Regular, size, notice);
+        let baseline = s(layout.expression_baseline);
+        canvas.text(
+            fonts,
+            Face::Regular,
+            size,
+            notice,
+            (right - w, baseline),
+            palette.accent,
+        );
+    } else if !view.expression.is_empty() {
         let size = fonts.fit(
             Face::Regular,
             s(EXPRESSION_SIZE),
@@ -454,6 +475,7 @@ mod tests {
             expression: "",
             display,
             pressed: None,
+            notice: None,
         };
         draw(
             &mut Canvas::new(&mut bytes, w, h),
@@ -473,6 +495,47 @@ mod tests {
                 assert_eq!((p[2], p[1], p[0]), (bg.r, bg.g, bg.b), "ink at {x},{y}");
             }
         }
+    }
+
+    #[test]
+    fn a_notice_replaces_the_expression_in_the_accent_color() {
+        let mut fonts = Fonts::load();
+        let palette = Palette::default();
+        let (w, h) = (320usize, 480usize);
+        let draw_with = |fonts: &mut Fonts, notice| {
+            let mut bytes = vec![0; w * h * 4];
+            let view = View {
+                expression: "12 +",
+                display: "12",
+                pressed: None,
+                notice,
+            };
+            draw(
+                &mut Canvas::new(&mut bytes, w, h),
+                fonts,
+                &palette,
+                &view,
+                (320.0, 480.0),
+                1.0,
+            );
+            bytes
+        };
+        let has = |bytes: &[u8], c: Color| {
+            bytes
+                .chunks(4)
+                .any(|p| (p[2], p[1], p[0]) == (c.r, c.g, c.b))
+        };
+        // The expression is drawn muted; with a notice, the accent shows in
+        // the expression line's rows and the muted ink doesn't.
+        let rows = |bytes: &[u8]| {
+            let top = PADDING as usize * w * 4;
+            let bottom = (h as f32 * DISPLAY_SHARE * 0.6) as usize * w * 4;
+            bytes[top..bottom].to_vec()
+        };
+        let plain = rows(&draw_with(&mut fonts, None));
+        let noted = rows(&draw_with(&mut fonts, Some("Copied")));
+        assert!(has(&plain, palette.muted) && !has(&plain, palette.accent));
+        assert!(has(&noted, palette.accent) && !has(&noted, palette.muted));
     }
 
     #[test]
@@ -518,6 +581,7 @@ mod tests {
             expression: "1,234 × 5,678 +",
             display: "7,006,652",
             pressed: Some((2, 1)),
+            notice: None,
         };
         // Warm the glyph cache, as every frame after the first finds it.
         draw(

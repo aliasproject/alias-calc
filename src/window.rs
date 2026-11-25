@@ -75,6 +75,9 @@ const MIN_SIZE: (u32, u32) = (260, 380);
 const DEFAULT_REPEAT: (Duration, Duration) =
     (Duration::from_millis(600), Duration::from_millis(40));
 
+/// How long "Copied" shows after a copy.
+const NOTICE_TIME: Duration = Duration::from_millis(1200);
+
 /// The left mouse button (linux/input-event-codes.h BTN_LEFT).
 const BTN_LEFT: u32 = 0x110;
 
@@ -141,6 +144,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         cursor: None,
         modifiers: Modifiers::default(),
         calc: Calc::new(),
+        notice_until: None,
         data_manager,
         data_device: None,
         copied: None,
@@ -195,6 +199,13 @@ fn event_loop(
         {
             app.repeat_tick();
         }
+        if app
+            .notice_until
+            .is_some_and(|until| until <= Instant::now())
+        {
+            app.notice_until = None;
+            app.dirty = true;
+        }
         if app.dirty && app.configured {
             app.draw()?;
             if app.keyboard_seat.is_some() || app.pointer_seat.is_some() {
@@ -229,8 +240,13 @@ fn event_loop(
         };
         // Only a held Backspace sets a timeout; otherwise sleep until the
         // compositor sends something.
-        let timeout = app.repeat.as_ref().map(|r| {
-            let wait = r.next.saturating_duration_since(Instant::now());
+        // Only a held Backspace or a showing "Copied" sets a timeout.
+        let deadline = match (app.repeat.as_ref().map(|r| r.next), app.notice_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let timeout = deadline.map(|next| {
+            let wait = next.saturating_duration_since(Instant::now());
             Timespec {
                 tv_sec: wait.as_secs() as _,
                 tv_nsec: wait.subsec_nanos() as _,
@@ -330,6 +346,8 @@ struct App {
     cursor: Option<WpCursorShapeDeviceV1>,
     modifiers: Modifiers,
     calc: Calc,
+    /// When "Copied" stops showing, while it shows.
+    notice_until: Option<Instant>,
     /// Copy and paste; None when the compositor has no data device manager.
     data_manager: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,
@@ -425,6 +443,8 @@ impl App {
         source.set_selection(device, serial);
         // Replacing the old source destroys it.
         self.copied = Some((source, self.calc.copy_text()));
+        self.notice_until = Some(Instant::now() + NOTICE_TIME);
+        self.dirty = true;
     }
 
     /// Ctrl+V: starts reading the selection; `event_loop` finishes it.
@@ -451,6 +471,7 @@ impl App {
             Progress::Pending => Some(reading),
             Progress::Done(text) => {
                 if self.calc.paste(&text) {
+                    self.notice_until = None;
                     self.dirty = true;
                 }
                 None
@@ -485,6 +506,8 @@ impl App {
 
     fn press(&mut self, key: Key) {
         self.calc.press(key);
+        // Carrying on hides "Copied" at once.
+        self.notice_until = None;
         self.dirty = true;
     }
 
@@ -587,6 +610,7 @@ impl App {
             expression: &expression,
             display: &display,
             pressed,
+            notice: self.notice_until.map(|_| "Copied"),
         };
         let mut canvas = Canvas::new(canvas, pw as usize, ph as usize);
         let logical = (self.size.0 as f32, self.size.1 as f32);
