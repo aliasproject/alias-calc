@@ -19,6 +19,15 @@
 //! digits is still more than the 16 shown, so nothing a person can type or
 //! see is rounded by it.
 //!
+//! Guard digits absorb one rounding, but a chain of them can still leave
+//! residue at the 20th digit (1 ÷ 3 ÷ 3 × 3 × 3 − 1). So a sum or difference
+//! that's at most 10⁻¹⁸ of its larger operand (10⁻¹⁵ when either is an
+//! `f64`) is cancellation, and is 0. That never hides a real difference
+//! between typed numbers: they carry at most 16 significant digits, so they
+//! differ by at least about 10⁻¹⁶ of their size. A pasted number with more
+//! than 16 digits can lose a difference that small, as it can lose digits
+//! to the 20-digit rounding.
+//!
 //! A decimal keeps 28 places rather than 28 significant digits, so small
 //! values can't carry those digits. A product or power below 10⁻¹³ (fewer
 //! than 16 digits in 28 places) and a quotient that doesn't end below 10⁻⁷
@@ -51,6 +60,15 @@ const SMALLEST_FULL_EXPONENT: i32 = EXACT_DIGITS as i32 - 1 - DECIMAL_PLACES;
 /// The smallest power of ten whose value 28 places hold to 22 significant
 /// digits: 10⁻⁷.
 const SMALLEST_QUOTIENT_EXPONENT: i32 = QUOTIENT_DIGITS as i32 - 1 - DECIMAL_PLACES;
+/// Cancellation snapping: a sum or difference this small relative to its
+/// larger operand is rounding left over from earlier steps, not a real
+/// difference, so it's 0. 10⁻¹⁸ for exact operands.
+const EXACT_CANCELLATION: Decimal = Decimal::from_parts(1, 0, 0, false, 18);
+/// The same for an `f64` operand, whose own error is about 10⁻¹⁶: a few
+/// units in the last place snap, but a real difference against a number
+/// typed to 15 digits (`2 ^ 0.5 − 1.41421356237309`, 3.6 × 10⁻¹⁵ of it)
+/// is kept, as omacalc shows it.
+const FLOAT_CANCELLATION: f64 = 1e-15;
 
 /// What the display says when a calculation has no answer.
 pub const ERROR_TEXT: &str = "Error";
@@ -122,7 +140,7 @@ impl Num {
     }
 
     /// An `f64` result. It stays approximate unless it's exactly what a
-    /// decimal would hold: a whole number, or a value whose 15-digit text
+    /// decimal would hold: a whole number up to 2^53, or a value whose 15-digit text
     /// reads back as the very same `f64` (so `4 ^ 0.5` is exactly 2, and
     /// `0.25 ^ 0.5` is exactly 0.5). Anything else, like `2 ^ 0.5`, stays an
     /// `f64`, so arithmetic on it stays in `f64` and shows 15 digits, as
@@ -134,7 +152,10 @@ impl Num {
         if value == 0.0 {
             return Ok(Num::ZERO);
         }
-        if value.fract() == 0.0 {
+        // Every whole f64 up to 2^53 is exact; above that a whole f64 carries
+        // binary noise (1e30 × 1e-7 is 99999999999999991611392), so it goes
+        // through the 15-digit test below like any other f64.
+        if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_992.0 {
             return Ok(match Decimal::from_f64_retain(value) {
                 Some(d) => Num::Exact(d.normalize()),
                 None => Num::Float(value),
@@ -176,10 +197,19 @@ impl Num {
                 kind => kind,
             };
             if let Some(result) = settle(kind, result, zero_ok) {
+                let largest = a.abs().max(b.abs());
+                if kind == Kind::Sum && result.abs() <= largest * EXACT_CANCELLATION {
+                    return Ok(Num::ZERO);
+                }
                 return Ok(Num::Exact(result));
             }
         }
-        Num::from_f64(float(self.to_f64(), other.to_f64()))
+        let (a, b) = (self.to_f64(), other.to_f64());
+        let result = float(a, b);
+        if kind == Kind::Sum && result.abs() <= a.abs().max(b.abs()) * FLOAT_CANCELLATION {
+            return Ok(Num::ZERO);
+        }
+        Num::from_f64(result)
     }
 
     fn apply(self, op: Op, other: Num) -> Answer {
@@ -1065,6 +1095,63 @@ mod tests {
             "0",
             "20 working digits drop the 1"
         );
+    }
+
+    /// Chained roundings cancel to exactly 0.
+    #[test]
+    fn cancellation_snaps_to_zero() {
+        assert_eq!(shows("1 ÷ 3 ÷ 3 × 3 × 3 - 1 ="), "0");
+        assert_eq!(shows("1 ÷ 7 ÷ 7 × 7 × 7 - 1 ="), "0");
+        assert_eq!(
+            shows("1 0 ÷ 3 ÷ 3 ÷ 3 ÷ 3 ÷ 3 × 3 × 3 × 3 × 3 × 3 - 1 0 ="),
+            "0"
+        );
+        // On the f64 side of the quotient cutoff.
+        assert_eq!(shows("1 ÷ 2 9 9 9 9 9 9 9 × 2 9 9 9 9 9 9 9 - 1 ="), "0");
+        assert_eq!(shows("1 ÷ 1 0 0 0 0 0 0 4 × 1 0 0 0 0 0 0 4 - 1 ="), "0");
+        assert_eq!(shows("3 ^ 4 0 sign × 3 ^ 4 0 - 1 ="), "0");
+    }
+
+    /// Snapping never hides a real difference between typed numbers.
+    #[test]
+    fn cancellation_keeps_real_differences() {
+        assert_eq!(
+            shows("1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 - 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 5 ="),
+            "1"
+        );
+        assert_eq!(
+            shows("1 - . 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 ="),
+            "0.9999999999999999"
+        );
+        assert_eq!(
+            shows(". 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 + . 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 ="),
+            "2e-16"
+        );
+        assert_eq!(shows("0 . 1 + 0 . 2 - 0 . 3 ="), "0");
+        // A float against a number typed to 15 digits keeps its difference.
+        let sqrt2 = shows("2 ^ . 5 - 1 . 4 1 4 2 1 3 5 6 2 3 7 3 0 9 =");
+        assert!(
+            sqrt2.starts_with("5.") && sqrt2.ends_with("e-15"),
+            "{sqrt2}"
+        );
+        let rest = shows("1 ÷ 3 - . 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 =");
+        assert!(
+            rest.starts_with("3.333") && rest.ends_with("e-17"),
+            "{rest}"
+        );
+    }
+
+    /// A whole f64 past 2^53 isn't exact, so it isn't promoted with its noise.
+    #[test]
+    fn large_whole_floats_stay_approximate() {
+        let mut calc = Calc::new();
+        assert!(calc.paste("1e30"));
+        press(&mut calc, "×");
+        assert!(calc.paste("1e-7"));
+        press(&mut calc, "=");
+        assert_eq!(calc.display(), "1e+23");
+        // Whole numbers up to 2^53 still become exact.
+        assert_eq!(shows("4 ^ . 5 + 0 . 1 ="), "2.1");
     }
 
     /// A negative power is a reciprocal and gets a quotient's guard digits.
