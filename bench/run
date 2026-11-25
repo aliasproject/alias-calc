@@ -23,6 +23,12 @@ done
 
 cargo build --release --locked --quiet
 target=$(cargo metadata --format-version 1 --no-deps | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+
+# Measure every app as the floating window it is in daily use (aliasOS
+# floats GNOME Calculator already). The rule lasts until Hyprland reloads
+# its config, so say so.
+hyprctl eval 'hl.window_rule({ match = { class = [[^(com\.aliasproject\.calc|omacalc|org\.gnome\.Calculator)$]] }, float = true })' >/dev/null
+echo "Added a Hyprland float rule for the three calculators (gone at the next config reload)." >&2
 results=()
 
 bench() {
