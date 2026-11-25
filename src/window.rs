@@ -177,8 +177,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 type Queue = smithay_client_toolkit::reexports::client::EventQueue<App>;
 
 /// Dispatch, draw if anything changed, then sleep until the compositor
-/// writes to the socket, the theme changes or a paste arrives. The only timeout is a held
-/// Backspace's next repeat, so an idle window never wakes. `theme` is None
+/// writes to the socket, the theme changes or a paste arrives. The only
+/// timeouts are a held Backspace's next repeat and the end of a showing
+/// "Copied", so an idle window never wakes. `theme` is None
 /// when there's no theme to follow.
 fn event_loop(
     queue: &mut Queue,
@@ -238,9 +239,8 @@ fn event_loop(
         } else {
             PollFlags::IN
         };
-        // Only a held Backspace sets a timeout; otherwise sleep until the
-        // compositor sends something.
-        // Only a held Backspace or a showing "Copied" sets a timeout.
+        // Only a held Backspace or a showing "Copied" sets a timeout;
+        // otherwise sleep until something arrives.
         let deadline = match (app.repeat.as_ref().map(|r| r.next), app.notice_until) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -277,7 +277,8 @@ fn event_loop(
         }
         app.paste = paste;
         match polled {
-            // The repeat's time came: the top of the loop fires it.
+            // A repeat or the end of "Copied" came due: the top of the
+            // loop handles both.
             Ok(0) => {
                 drop(guard);
                 continue;
@@ -449,6 +450,8 @@ impl App {
 
     /// Ctrl+V: starts reading the selection; `event_loop` finishes it.
     fn paste(&mut self) {
+        // Asking to paste ends "Copied", whether or not anything arrives.
+        self.end_notice();
         let Some(offer) = self
             .data_device
             .as_ref()
@@ -471,7 +474,6 @@ impl App {
             Progress::Pending => Some(reading),
             Progress::Done(text) => {
                 if self.calc.paste(&text) {
-                    self.notice_until = None;
                     self.dirty = true;
                 }
                 None
@@ -507,8 +509,14 @@ impl App {
     fn press(&mut self, key: Key) {
         self.calc.press(key);
         // Carrying on hides "Copied" at once.
-        self.notice_until = None;
+        self.end_notice();
         self.dirty = true;
+    }
+
+    fn end_notice(&mut self) {
+        if self.notice_until.take().is_some() {
+            self.dirty = true;
+        }
     }
 
     /// Reads the theme again. A theme that can't be read keeps the colors
@@ -960,6 +968,8 @@ impl PointerHandler for App {
                 PointerEventKind::Press {
                     button: BTN_LEFT, ..
                 } => {
+                    // Any click ends "Copied", on a key or not.
+                    self.end_notice();
                     self.mouse_down = self.button_under_pointer();
                 }
                 PointerEventKind::Release {
