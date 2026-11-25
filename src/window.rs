@@ -901,6 +901,9 @@ impl KeyboardHandler for App {
         // Keyboard focus: Tab, Shift+Tab and the arrows move it (and show
         // it); Space presses the focused key.
         let movement = match event.keysym {
+            // Shift+Tab is ISO_Left_Tab on standard layouts, Tab with Shift
+            // held on others.
+            Keysym::Tab if m.shift => Some(ui::Move::Previous),
             Keysym::Tab => Some(ui::Move::Next),
             Keysym::ISO_Left_Tab => Some(ui::Move::Previous),
             Keysym::Up => Some(ui::Move::Up),

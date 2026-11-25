@@ -196,13 +196,17 @@ impl Palette {
                 &[background],
                 NON_TEXT_CONTRAST,
             ),
-            equals_border: (contrast(accent, background) < NON_TEXT_CONTRAST).then(|| {
-                readable(
-                    background.mix(foreground, 0.35),
-                    &[background],
-                    NON_TEXT_CONTRAST,
-                )
-            }),
+            // Either of the = key's fills under 3:1 gets the outline.
+            equals_border: [accent, accent_pressed]
+                .iter()
+                .any(|&f| contrast(f, background) < NON_TEXT_CONTRAST)
+                .then(|| {
+                    readable(
+                        background.mix(foreground, 0.35),
+                        &[background],
+                        NON_TEXT_CONTRAST,
+                    )
+                }),
             // The digits' colour already has 4.5:1 on the background.
             focus: labels.foreground,
         }
@@ -322,6 +326,11 @@ const DISPLAY_SIZE: f32 = 60.0;
 const KEY_SIZE: f32 = 24.0;
 const EXPRESSION_MIN_SIZE: f32 = 13.0;
 const DISPLAY_MIN_SIZE: f32 = 16.0;
+/// The smallest a key may be in either direction: the house rule is 44 px
+/// (WCAG 2.5.8 asks 24). MIN_SIZE in src/window.rs is chosen to keep it, and
+/// larger text never takes keypad height below it.
+const MIN_KEY: f32 = 44.0;
+
 /// Focus ring: its width and its gap from the key, inside the 6 px between
 /// keys.
 const FOCUS_WIDTH: f32 = 2.0;
@@ -341,8 +350,12 @@ struct Layout {
 
 impl Layout {
     fn new(fonts: &Fonts, width: f32, height: f32, text_scale: f32) -> Self {
-        let display_height =
-            (height * DISPLAY_SHARE).max((EXPRESSION_SIZE + DISPLAY_SIZE) * text_scale);
+        // Larger text wants a taller display, but never at the keys' cost:
+        // they keep MIN_KEY each, and the display text fits what's left.
+        let keypad_min = 5.0 * MIN_KEY + 4.0 * GAP;
+        let display_height = (height * DISPLAY_SHARE)
+            .max((EXPRESSION_SIZE + DISPLAY_SIZE) * text_scale)
+            .min((height - 2.0 * PADDING - keypad_min).max(height * DISPLAY_SHARE));
         let grid_top = PADDING + display_height;
         let rows = KEYS.len() as f32;
         let cols = KEYS[0].len() as f32;
@@ -395,6 +408,8 @@ pub fn draw(
     let s = |v: f32| v * scale;
     // Text sizes follow the aliasOS text size; spacing doesn't.
     let t = |v: f32| v * scale * view.text_scale;
+    // Minimums don't shrink below the defaults with smaller text.
+    let floor = |v: f32| v * scale * view.text_scale.max(1.0);
 
     canvas.fill(palette.background);
 
@@ -405,7 +420,7 @@ pub fn draw(
         let size = fonts.fit(
             Face::Regular,
             t(EXPRESSION_SIZE),
-            t(EXPRESSION_MIN_SIZE),
+            floor(EXPRESSION_MIN_SIZE),
             notice,
             max_text,
         );
@@ -423,7 +438,7 @@ pub fn draw(
         let size = fonts.fit(
             Face::Regular,
             t(EXPRESSION_SIZE),
-            t(EXPRESSION_MIN_SIZE),
+            floor(EXPRESSION_MIN_SIZE),
             view.expression,
             max_text,
         );
@@ -446,7 +461,7 @@ pub fn draw(
     let mut size = fonts.fit(
         Face::Light,
         t(DISPLAY_SIZE),
-        t(DISPLAY_MIN_SIZE),
+        floor(DISPLAY_MIN_SIZE),
         view.display,
         max_text,
     );
@@ -539,10 +554,10 @@ fn focus_ring(
     // Four edges, square-cornered like aliasOS windows, so the key inside
     // is never painted over.
     let (x0, y0, x1, y1) = (px - out, py - out, px + pw + out, py + ph + out);
-    canvas.rounded_rect(x0, y0, x1 - x0, width, width / 2.0, color);
-    canvas.rounded_rect(x0, y1 - width, x1 - x0, width, width / 2.0, color);
-    canvas.rounded_rect(x0, y0, width, y1 - y0, width / 2.0, color);
-    canvas.rounded_rect(x1 - width, y0, width, y1 - y0, width / 2.0, color);
+    canvas.rounded_rect(x0, y0, x1 - x0, width, 0.0, color);
+    canvas.rounded_rect(x0, y1 - width, x1 - x0, width, 0.0, color);
+    canvas.rounded_rect(x0, y0, width, y1 - y0, 0.0, color);
+    canvas.rounded_rect(x1 - width, y0, width, y1 - y0, 0.0, color);
 }
 
 /// Where keyboard focus goes from `from`. With no focus yet, every move
@@ -786,7 +801,7 @@ mod tests {
     #[test]
     fn keypad_fits_inside_the_window() {
         let fonts = Fonts::load();
-        for (w, h) in [(260.0, 380.0), (320.0, 480.0), (900.0, 1200.0)] {
+        for (w, h) in [(260.0, 400.0), (320.0, 480.0), (900.0, 1200.0)] {
             let layout = Layout::new(&fonts, w, h, 1.0);
             let (x, y, kw, kh) = layout.key_rect(4, 3);
             assert!(
@@ -828,11 +843,11 @@ mod tests {
         edge("key outline", p.border);
         edge("focus ring", p.focus);
         edge("= key boundary", p.equals_border.unwrap_or(p.accent));
+        edge(
+            "= key boundary held",
+            p.equals_border.unwrap_or(p.accent_pressed),
+        );
     }
-
-    /// The smallest a key may be in either direction: the house rule is 44 px
-    /// (WCAG 2.5.8 asks 24). MIN_SIZE in src/window.rs keeps it.
-    const MIN_KEY: f32 = 44.0;
 
     #[test]
     fn keys_are_at_least_44_px_at_the_minimum_window() {
@@ -847,6 +862,23 @@ mod tests {
                 kw >= MIN_KEY && kh >= MIN_KEY,
                 "text {text_scale}: keys {kw}×{kh}"
             );
+        }
+    }
+
+    #[test]
+    fn larger_text_never_shrinks_keys_below_44_px() {
+        let fonts = Fonts::load();
+        // The window stays small while the setting goes up (Wayland apps
+        // can't resize themselves).
+        for (w, h) in [(260.0, 400.0), (320.0, 480.0)] {
+            for text_scale in [1.0, 1.5, 2.0] {
+                let layout = Layout::new(&fonts, w, h, text_scale);
+                let (_, _, kw, kh) = layout.key_rect(4, 3);
+                assert!(
+                    kw >= MIN_KEY && kh >= MIN_KEY,
+                    "{w}x{h} at {text_scale}: {kw}×{kh}"
+                );
+            }
         }
     }
 
