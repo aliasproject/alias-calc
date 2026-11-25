@@ -12,68 +12,78 @@
 //!
 //! # How exact a value is
 //!
+//! rust_decimal rounds silently: `checked_add`, `checked_mul` and the rest
+//! don't fail when a result needs more than 28 places or 96 bits, and
+//! `from_str` rounds a long number the same way. So whether a value is exact
+//! is decided by comparing it with the true value, worked out in 256 bits
+//! (see [`Value`]), never by undoing an operation with another rounding one.
+//!
 //! Every value carries one of three levels, and a result takes the highest
 //! level among its inputs and its operation:
 //!
-//! * **Exact**: what was typed or pasted, and any + − × or whole power ≥ 0
-//!   of exact values that a decimal holds without loss, including a division
-//!   that ends (1 ÷ 4, 1 ÷ 100000000). Exact values are never rounded and
-//!   never snapped, so `1000000000 + 0.000000001 − 1000000000` is 1e-09 and
+//! * **Exact**: what was typed or pasted (when a decimal holds it in full),
+//!   and any + − × or whole power ≥ 0 of exact values whose true result a
+//!   decimal holds, including a division that ends (1 ÷ 4, 1 ÷ 100000000).
+//!   Exact values are never rounded and never snapped, so
+//!   `1000000000 + 0.000000001 − 1000000000` is 1e-09 and
 //!   `8403911115566009 + 2.4118675 − 8403911115566009` is 2.4118675.
 //! * **Guarded**: a division that doesn't end (1 ÷ 3), a negative power (a
-//!   reciprocal), a + − × or power that a decimal can't hold without loss,
-//!   and anything worked out from those. A cut-off quotient keeps 22
-//!   significant digits and every other guarded result 20, the same at
-//!   every size. The two extra digits are guard digits: the next rounding
-//!   to 20 absorbs the quotient's last-place error, so 1 ÷ 3 × 3 − 1 and
-//!   1 ÷ 7000 × 7000 − 1 are exactly 0. A chain of quotients can still leave
-//!   residue at the 20th digit (1 ÷ 3 ÷ 3 × 3 × 3 − 1), so a guarded sum or
-//!   difference that's at most 10⁻¹⁸ of its larger operand is 0.
+//!   reciprocal), any operation the decimal had to round, and anything worked
+//!   out from those. A guarded value keeps every digit the decimal holds, at
+//!   least 26 significant ones (see below), so each rounding is off by at
+//!   most about 10⁻²⁶ of the value. A guarded sum or difference that's at
+//!   most 10⁻²⁴ of its larger operand is that residue, and is 0: so
+//!   1 ÷ 3 × 3 − 1, 1 ÷ 3 ÷ 3 × 3 × 3 − 1 and 34 ÷ 7.67 + 9.3 ÷ 7.67 −
+//!   43.3 ÷ 7.67 are exactly 0, while a real difference like
+//!   1 ÷ 3 − 0.333333333333333333 (3 × 10⁻¹⁹) is kept.
 //! * **Approx**: anything that went through `f64` (a fractional power, a
-//!   quotient too small to keep 22 digits, a value out of a decimal's
+//!   rounded value too small to hold 26 digits, a value out of a decimal's
 //!   range), even when it's turned back into a decimal, and anything worked
 //!   out from it. It's shown to 15 digits when it's an `f64`, and a sum or
 //!   difference that's at most 10⁻¹⁵ of its larger operand is 0, which
 //!   clears an `f64`'s last-place error but keeps a real difference like
 //!   `2 ^ 0.5 − 1.41421356237309`.
 //!
-//! A decimal keeps 28 places rather than 28 significant digits, so small
-//! values can't carry those digits. A rounded product or power below 10⁻¹³
-//! (fewer than 16 digits in 28 places) and a cut-off quotient below 10⁻⁷
-//! (fewer than 22) are worked out in `f64` instead, and so become Approx. A
-//! fractional power is worked out in `f64` too; `4 ^ 0.5` is still shown as
-//! 2. Like C's `%g`, a value switches to exponent form (`1.5e+20`, `1e-05`)
+//! A decimal keeps 28 places rather than 28 significant digits, so a small
+//! value holds few digits. A rounded product, power or quotient below 10⁻³
+//! (fewer than 26 digits in 28 places) is worked out in `f64` instead, and
+//! so becomes Approx. A fractional power is worked out in `f64` too;
+//! `4 ^ 0.5` is still shown as 2.
+//!
+//! The one remaining limit is a sum of exact values whose true result needs
+//! more than 28 digits: `1000000000000000 + 0.0000000000000001` can't be
+//! held, so it's rounded and becomes Guarded, and taking 1000000000000000
+//! back off gives 0, as omacalc's double does. Fixing that would take a
+//! wider number type.
+//!
+//! Like C's `%g`, a value switches to exponent form (`1.5e+20`, `1e-05`)
 //! when its exponent is below −4 or at least the precision (16 for decimal
 //! values, 15 for `f64`).
 
 use std::fmt::Write as _;
 use std::str::FromStr;
 
-use rust_decimal::{Decimal, MathematicalOps};
+use rust_decimal::Decimal;
 
 /// Significant digits shown for a decimal value, and the most that can be typed.
 const EXACT_DIGITS: u32 = 16;
 /// Significant digits shown for an `f64` value: what a double holds reliably.
 const FLOAT_DIGITS: u32 = 15;
-/// The working precision for guarded and approximate results: sums,
-/// differences, products and powers are rounded to this many significant
-/// digits (see [`settle`]).
-const WORKING_DIGITS: u32 = 20;
-/// Cut-off quotients (÷, and powers with a negative exponent) keep two more
-/// digits, so the next rounding to [`WORKING_DIGITS`] absorbs their
-/// last-place error.
-const QUOTIENT_DIGITS: u32 = WORKING_DIGITS + 2;
+/// The fewest significant digits a rounded product or quotient may hold and
+/// stay a decimal (see [`settle`]). Its rounding error is then at most
+/// 5 × 10⁻²⁶ of it, far enough below the 10⁻²⁴ snap that a chain of rounded
+/// steps still cancels to 0.
+const GUARDED_DIGITS: u32 = 26;
 /// A decimal keeps this many places after the point, whatever its size.
 const DECIMAL_PLACES: i32 = 28;
-/// The smallest power of ten whose value 28 places hold to 16 significant
-/// digits: 10⁻¹³.
-const SMALLEST_FULL_EXPONENT: i32 = EXACT_DIGITS as i32 - 1 - DECIMAL_PLACES;
-/// The smallest power of ten whose value 28 places hold to 22 significant
-/// digits: 10⁻⁷.
-const SMALLEST_QUOTIENT_EXPONENT: i32 = QUOTIENT_DIGITS as i32 - 1 - DECIMAL_PLACES;
+/// The smallest power of ten whose value 28 places hold to 26 significant
+/// digits: 10⁻³.
+const SMALLEST_GUARDED_EXPONENT: i32 = GUARDED_DIGITS as i32 - 1 - DECIMAL_PLACES;
 /// Cancellation snapping for a guarded sum or difference: this small
 /// relative to its larger operand, it's residue from rounding, so it's 0.
-const GUARDED_CANCELLATION: Decimal = Decimal::from_parts(1, 0, 0, false, 18);
+/// A 28-digit value leaves about 10⁻²⁷ a step, and a real difference like
+/// `1 ÷ 3 − 0.333333333333333333` (3 × 10⁻¹⁹) is far above it.
+const GUARDED_CANCELLATION: Decimal = Decimal::from_parts(1, 0, 0, false, 24);
 /// The same for an approximate one. An `f64`'s own error is about 10⁻¹⁶, so
 /// a few units in the last place snap, but a real difference against a
 /// number typed to 15 digits (`2 ^ 0.5 − 1.41421356237309`, 3.6 × 10⁻¹⁵ of
@@ -243,33 +253,32 @@ impl Num {
                 other,
                 Kind::Sum,
                 Decimal::checked_add,
-                |a, b, r| r.checked_sub(b) == Some(a),
+                lossless_add,
                 |a, b| a + b,
             ),
             Op::Sub => self.combine(
                 other,
                 Kind::Sum,
                 Decimal::checked_sub,
-                |a, b, r| r.checked_add(b) == Some(a),
+                lossless_sub,
                 |a, b| a - b,
             ),
             Op::Mul => self.combine(
                 other,
                 Kind::Product,
                 Decimal::checked_mul,
-                |a, b, r| b.is_zero() || r.checked_div(b) == Some(a),
+                lossless_mul,
                 |a, b| a * b,
             ),
             Op::Div => {
                 if other.is_zero() {
                     return Err(NoAnswer);
                 }
-                // A quotient ends exactly when it multiplies back to the dividend.
                 self.combine(
                     other,
                     Kind::Quotient,
                     Decimal::checked_div,
-                    |a, b, r| r.checked_mul(b) == Some(a),
+                    lossless_div,
                     |a, b| a / b,
                 )
             }
@@ -336,16 +345,15 @@ enum Kind {
 ///
 /// * A lossless result keeps its inputs' level; anything else is at least
 ///   Guarded.
-/// * An Exact result is kept as it is: never rounded.
-/// * A Guarded or Approx result is rounded: a cut-off quotient to 22
-///   significant digits ([`QUOTIENT_DIGITS`]), anything else to 20
-///   ([`WORKING_DIGITS`]). The precision is the same at every size: guard
-///   digits counted in places (a decimal's 28) would run out for a small
-///   quotient like 1 ÷ 3000.
-/// * Small rounded values can't carry those digits in 28 places, so they go
-///   to `f64`: a product or power below 10⁻¹³ and a cut-off quotient below
-///   10⁻⁷. A zero is kept only when zero is the true answer (`zero_ok`), not
-///   when a tiny product rounded away.
+/// * No result is rounded beyond what the decimal itself did: a Guarded
+///   result keeps all 28–29 digits, and cancellation snapping (see [`snap`])
+///   clears the residue a rounded step leaves.
+/// * A decimal keeps 28 places rather than 28 significant digits, so a small
+///   rounded result holds few digits. A rounded (Guarded or Approx) product,
+///   power or cut-off quotient that holds fewer than 26 significant digits
+///   ([`GUARDED_DIGITS`], so below 10⁻³) goes to `f64` instead. A zero is
+///   kept only when zero is the true answer (`zero_ok`), not when a tiny
+///   product rounded away.
 fn settle(
     kind: Kind,
     raw: Decimal,
@@ -364,22 +372,21 @@ fn settle(
     if level == Level::Exact {
         return Some((raw.normalize(), level));
     }
-    let (digits, smallest) = match kind {
-        Kind::Sum => (WORKING_DIGITS, i32::MIN),
-        Kind::Product => (WORKING_DIGITS, SMALLEST_FULL_EXPONENT),
-        Kind::Quotient if lossless => (QUOTIENT_DIGITS, i32::MIN),
-        Kind::Quotient => (QUOTIENT_DIGITS, SMALLEST_QUOTIENT_EXPONENT),
+    let smallest = match kind {
+        Kind::Sum => i32::MIN,
+        Kind::Quotient if lossless => i32::MIN,
+        Kind::Product | Kind::Quotient => SMALLEST_GUARDED_EXPONENT,
     };
     if first_digit_exponent(raw) < smallest {
         return None;
     }
-    Some((raw.round_sf(digits).unwrap_or(raw).normalize(), level))
+    Some((raw.normalize(), level))
 }
 
 /// Cancellation snapping for + and −: a non-zero sum or difference this
 /// small next to its larger operand (`largest`) is residue from rounding,
-/// so it's 0. Exact results never snap; Guarded ones at 10⁻¹⁸ of `largest`,
-/// Approx ones at 10⁻¹⁵.
+/// so it's 0. Exact results never snap; Guarded ones at 10⁻²⁴ of `largest`
+/// (a 28-digit value's residue is about 10⁻²⁷ a step), Approx ones at 10⁻¹⁵.
 fn snap(kind: Kind, value: Num, largest: Decimal) -> Num {
     let Num::Dec(result, level) = value else {
         return value;
@@ -410,19 +417,204 @@ fn first_digit_exponent(value: Decimal) -> i32 {
 /// it out in `f64`. A negative power is the reciprocal of the positive one,
 /// so it's settled as a quotient and gets the same guard digits as 1 ÷ x.
 fn integer_power(base: Decimal, e: i64, level: Level) -> Option<(Decimal, Level)> {
-    let n = e.unsigned_abs();
-    let power = base.checked_powu(n)?;
-    // A normalized base ends in a non-zero digit, so its power does too: the
-    // power lost nothing exactly when it kept every place.
-    let places = u64::from(base.normalize().scale()) * n;
-    let lossless = u64::from(power.normalize().scale()) == places;
-    let (power, level) = settle(Kind::Product, power, lossless, level, base.is_zero())?;
+    let (raw, lossless) = power(base, e.unsigned_abs())?;
+    let (raw, level) = settle(Kind::Product, raw, lossless, level, base.is_zero())?;
     if e >= 0 {
-        return Some((power, level));
+        return Some((raw, level));
     }
-    let reciprocal = Decimal::ONE.checked_div(power)?;
-    let ends = reciprocal.checked_mul(power) == Some(Decimal::ONE);
+    let reciprocal = Decimal::ONE.checked_div(raw)?;
+    let ends = lossless_div(Decimal::ONE, raw, reciprocal);
     settle(Kind::Quotient, reciprocal, ends, level, false)
+}
+
+/// A 256-bit unsigned integer: wide enough for the exact sum or product of
+/// two decimal mantissas (96 bits each, aligned by up to 10²⁸), so the
+/// lossless checks below can compare rust_decimal's result with the true one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Wide([u64; 4]);
+
+impl Wide {
+    fn from_u128(x: u128) -> Wide {
+        Wide([x as u64, (x >> 64) as u64, 0, 0])
+    }
+
+    fn is_zero(self) -> bool {
+        self.0 == [0; 4]
+    }
+
+    fn mul_u64(self, m: u64) -> Option<Wide> {
+        let mut out = [0u64; 4];
+        let mut carry = 0u128;
+        for (o, limb) in out.iter_mut().zip(self.0) {
+            let t = u128::from(limb) * u128::from(m) + carry;
+            *o = t as u64;
+            carry = t >> 64;
+        }
+        (carry == 0).then_some(Wide(out))
+    }
+
+    fn mul_u128(self, m: u128) -> Option<Wide> {
+        let low = self.mul_u64(m as u64)?;
+        let high = self.mul_u64((m >> 64) as u64)?;
+        if high.0[3] != 0 {
+            return None;
+        }
+        low.add(Wide([0, high.0[0], high.0[1], high.0[2]]))
+    }
+
+    fn mul_pow10(mut self, mut k: u32) -> Option<Wide> {
+        while k > 0 {
+            let step = k.min(19);
+            self = self.mul_u64(10u64.pow(step))?;
+            k -= step;
+        }
+        Some(self)
+    }
+
+    fn add(self, other: Wide) -> Option<Wide> {
+        let mut out = [0u64; 4];
+        let mut carry = false;
+        for (o, (x, y)) in out.iter_mut().zip(self.0.into_iter().zip(other.0)) {
+            let (s, c1) = x.overflowing_add(y);
+            let (s, c2) = s.overflowing_add(u64::from(carry));
+            *o = s;
+            carry = c1 || c2;
+        }
+        (!carry).then_some(Wide(out))
+    }
+
+    /// `self − other`, for `self ≥ other`.
+    fn sub(self, other: Wide) -> Wide {
+        let mut out = [0u64; 4];
+        let mut borrow = false;
+        for (o, (x, y)) in out.iter_mut().zip(self.0.into_iter().zip(other.0)) {
+            let (d, b1) = x.overflowing_sub(y);
+            let (d, b2) = d.overflowing_sub(u64::from(borrow));
+            *o = d;
+            borrow = b1 || b2;
+        }
+        Wide(out)
+    }
+
+    fn less_than(self, other: Wide) -> bool {
+        self.0.iter().rev().lt(other.0.iter().rev())
+    }
+
+    fn div_rem_10(self) -> (Wide, u64) {
+        let mut out = [0u64; 4];
+        let mut rem = 0u128;
+        for i in (0..4).rev() {
+            let cur = (rem << 64) | u128::from(self.0[i]);
+            out[i] = (cur / 10) as u64;
+            rem = cur % 10;
+        }
+        (Wide(out), rem as u64)
+    }
+}
+
+/// An exact decimal value, `mag × 10^−scale`, with trailing zeros removed
+/// (down to scale 0), so equal values compare equal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Value {
+    negative: bool,
+    mag: Wide,
+    scale: u32,
+}
+
+impl Value {
+    fn new(negative: bool, mut mag: Wide, mut scale: u32) -> Value {
+        while scale > 0 {
+            let (q, r) = mag.div_rem_10();
+            if r != 0 {
+                break;
+            }
+            mag = q;
+            scale -= 1;
+        }
+        let negative = negative && !mag.is_zero();
+        let scale = if mag.is_zero() { 0 } else { scale };
+        Value {
+            negative,
+            mag,
+            scale,
+        }
+    }
+
+    fn of(d: Decimal) -> Value {
+        Value::new(
+            d.is_sign_negative(),
+            Wide::from_u128(d.mantissa().unsigned_abs()),
+            d.scale(),
+        )
+    }
+
+    /// The true `a ± b`.
+    fn sum(a: Decimal, b: Decimal, subtract: bool) -> Option<Value> {
+        let scale = a.scale().max(b.scale());
+        let ma = Wide::from_u128(a.mantissa().unsigned_abs()).mul_pow10(scale - a.scale())?;
+        let mb = Wide::from_u128(b.mantissa().unsigned_abs()).mul_pow10(scale - b.scale())?;
+        let (na, nb) = (a.is_sign_negative(), b.is_sign_negative() ^ subtract);
+        Some(if na == nb {
+            Value::new(na, ma.add(mb)?, scale)
+        } else if mb.less_than(ma) {
+            Value::new(na, ma.sub(mb), scale)
+        } else {
+            Value::new(nb, mb.sub(ma), scale)
+        })
+    }
+
+    /// The true `a × b`.
+    fn product(a: Decimal, b: Decimal) -> Option<Value> {
+        let mag =
+            Wide::from_u128(a.mantissa().unsigned_abs()).mul_u128(b.mantissa().unsigned_abs())?;
+        let negative = a.is_sign_negative() ^ b.is_sign_negative();
+        Some(Value::new(negative, mag, a.scale() + b.scale()))
+    }
+}
+
+// rust_decimal's checked_add, checked_sub, checked_mul and checked_div don't
+// fail when a result needs more than 28 places or 96 bits: they round it,
+// silently. So whether an operation lost anything is decided here by
+// comparing its result with the true value, worked out exactly in 256 bits,
+// and never by undoing it with another rounding operation.
+
+/// Whether `r` is exactly `a + b`.
+fn lossless_add(a: Decimal, b: Decimal, r: Decimal) -> bool {
+    Value::sum(a, b, false) == Some(Value::of(r))
+}
+
+/// Whether `r` is exactly `a − b`.
+fn lossless_sub(a: Decimal, b: Decimal, r: Decimal) -> bool {
+    Value::sum(a, b, true) == Some(Value::of(r))
+}
+
+/// Whether `r` is exactly `a × b`.
+fn lossless_mul(a: Decimal, b: Decimal, r: Decimal) -> bool {
+    Value::product(a, b) == Some(Value::of(r))
+}
+
+/// Whether the quotient `q = a ÷ b` ends: `q × b` is exactly `a`.
+fn lossless_div(a: Decimal, b: Decimal, q: Decimal) -> bool {
+    Value::product(q, b) == Some(Value::of(a))
+}
+
+/// `base ^ n` by squaring, and whether every multiplication was lossless.
+fn power(base: Decimal, mut n: u64) -> Option<(Decimal, bool)> {
+    let (mut result, mut square, mut lossless) = (Decimal::ONE, base, true);
+    while n > 0 {
+        if n & 1 == 1 {
+            let next = result.checked_mul(square)?;
+            lossless &= lossless_mul(result, square, next);
+            result = next;
+        }
+        n >>= 1;
+        if n > 0 {
+            let next = square.checked_mul(square)?;
+            lossless &= lossless_mul(square, square, next);
+            square = next;
+        }
+    }
+    Some((result, lossless))
 }
 
 /// Rounds to 16 significant digits and lays the digits out.
@@ -571,15 +763,21 @@ fn parse_number(text: &str) -> Option<Num> {
         }
     }
 
-    let exact = if exponent.is_some() {
+    let parsed = if exponent.is_some() {
         Decimal::from_scientific(text).ok()
     } else {
         Decimal::from_str(text).ok()
     };
-    match exact {
-        Some(d) if !(d.is_zero() && text.bytes().any(|b| (b'1'..=b'9').contains(&b))) => {
-            Some(Num::exact(d))
-        }
+    // from_str rounds a number with more digits or places than a decimal
+    // holds, so it's exact only when it matches the text's true value.
+    let exponent: i64 = match exponent {
+        Some(e) => e.parse().ok()?,
+        None => 0,
+    };
+    let scale = fraction.len() as i64 - exponent;
+    let truth = text_value(text.starts_with('-'), &format!("{whole}{fraction}"), scale);
+    match parsed {
+        Some(d) if truth.is_some_and(|t| t == Value::of(d)) => Some(Num::exact(d)),
         _ => {
             let value = f64::from_str(text).ok()?;
             // 1e-400 reads as 0 in f64: refuse it rather than show 0.
@@ -590,6 +788,22 @@ fn parse_number(text: &str) -> Option<Num> {
             Num::from_f64(value).ok()
         }
     }
+}
+
+/// The exact value of `digits × 10^−scale`, or `None` when it's too long
+/// to work out (and so can't be a decimal anyway).
+fn text_value(negative: bool, digits: &str, scale: i64) -> Option<Value> {
+    let digits = digits.trim_start_matches('0');
+    let mut mag = Wide::from_u128(0);
+    for b in digits.bytes() {
+        mag = mag
+            .mul_u64(10)?
+            .add(Wide::from_u128(u128::from(b - b'0')))?;
+    }
+    if scale < 0 {
+        mag = mag.mul_pow10(u32::try_from(-scale).ok()?)?;
+    }
+    Some(Value::new(negative, mag, u32::try_from(scale.max(0)).ok()?))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1375,6 +1589,251 @@ mod tests {
             assert_eq!(shows(&keys_text), expected, "{keys_text}");
         }
         assert!(checked > 3000, "only {checked} cases fit a decimal");
+    }
+
+    /// rust_decimal rounds silently; a rounded result is never marked Exact.
+    #[test]
+    fn silent_rounding_is_caught() {
+        // 1.234567890123456e-20 needs 36 places: rounded, so not exact, and
+        // too small to keep 26 digits, so it's worked out in f64.
+        assert_eq!(
+            shows(
+                ". 0 0 0 0 0 0 0 0 0 1 × . 0 0 0 0 0 0 0 0 0 1 × 1 . 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 ="
+            ),
+            format_float(1.234567890123456e-20)
+        );
+        assert_eq!(
+            shows("3 4 ÷ 7 . 6 7 + 9 . 3 ÷ 7 . 6 7 - 4 3 . 3 ÷ 7 . 6 7 ="),
+            "0"
+        );
+        let sixths = "1 ÷ 1 . 2 + ".repeat(5) + "1 ÷ 1 . 2 - 5 =";
+        assert_eq!(shows(&sixths), "0");
+        assert_eq!(
+            shows("2 . 4 7 5 8 ^ 2 sign × 2 . 4 7 5 8 × 2 . 4 7 5 8 - 1 ="),
+            "0"
+        );
+        let mut calc = Calc::new();
+        assert!(calc.paste("0.00000000000000000000000000015"));
+        assert_eq!(calc.display(), "1.5e-28");
+    }
+
+    /// Guarded values keep every digit the decimal holds.
+    #[test]
+    fn guarded_values_keep_their_digits() {
+        assert_eq!(
+            shows("2 ÷ 3 + 1 0 0 0 0 0 0 0 0 0 0 - 1 0 0 0 0 0 0 0 0 0 0 ="),
+            "0.6666666666666667"
+        );
+        let mut calc = Calc::new();
+        press(&mut calc, "1 ÷ 3 -");
+        assert!(calc.paste("0.333333333333333333"));
+        press(&mut calc, "=");
+        let rest = calc.display();
+        assert!(
+            rest.starts_with("3.333333333") && rest.ends_with("e-19"),
+            "{rest}"
+        );
+    }
+
+    /// The remaining limit: a sum of typed numbers that needs more than 28
+    /// digits is rounded (Guarded), as omacalc's double rounds it too.
+    #[test]
+    fn sums_past_28_digits_round() {
+        assert_eq!(
+            shows(
+                "1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 + . 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 \
+                 - 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ="
+            ),
+            "0"
+        );
+    }
+
+    /// Backspace over a whole new operand shows the previous one, as omacalc
+    /// does (its display falls back to the last operand when nothing's typed).
+    #[test]
+    fn backspace_over_new_operand_shows_previous() {
+        let mut calc = Calc::new();
+        press(&mut calc, "1 2 + 3 backspace");
+        assert_eq!(calc.display(), "12");
+        assert_eq!(calc.expression(), "12 +");
+        press(&mut calc, "4 =");
+        assert_eq!(calc.display(), "16");
+    }
+
+    /// A reference value `m × 10^−s` (`s` may be negative), worked in i128,
+    /// independent of rust_decimal.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Ref {
+        m: i128,
+        s: i32,
+    }
+
+    impl Ref {
+        fn of(d: Decimal) -> Ref {
+            Ref {
+                m: d.mantissa(),
+                s: d.scale() as i32,
+            }
+            .normal()
+        }
+
+        fn normal(mut self) -> Ref {
+            while self.m != 0 && self.m % 10 == 0 {
+                self.m /= 10;
+                self.s -= 1;
+            }
+            if self.m == 0 {
+                self.s = 0;
+            }
+            self
+        }
+
+        fn scaled(self, s: i32) -> Option<i128> {
+            self.m
+                .checked_mul(10i128.checked_pow(u32::try_from(s - self.s).ok()?)?)
+        }
+
+        fn add(self, other: Ref, subtract: bool) -> Option<Ref> {
+            let s = self.s.max(other.s);
+            let (a, b) = (self.scaled(s)?, other.scaled(s)?);
+            let m = if subtract {
+                a.checked_sub(b)?
+            } else {
+                a.checked_add(b)?
+            };
+            Some(Ref { m, s }.normal())
+        }
+
+        fn mul(self, other: Ref) -> Option<Ref> {
+            let m = self.m.checked_mul(other.m)?;
+            Some(
+                Ref {
+                    m,
+                    s: self.s + other.s,
+                }
+                .normal(),
+            )
+        }
+
+        /// Whether a decimal can hold this value exactly: a 96-bit mantissa
+        /// and at most 28 places.
+        fn fits(self) -> bool {
+            let r = self.normal();
+            let m = if r.s < 0 {
+                match r.scaled(0) {
+                    Some(m) => m,
+                    None => return false,
+                }
+            } else {
+                r.m
+            };
+            r.s <= 28 && m.unsigned_abs() < (1u128 << 96)
+        }
+    }
+
+    /// A typed operand: 1–16 significant digits, scale −10 to 16, either sign.
+    fn reference_operand(rng: &mut Rng) -> Decimal {
+        let len = 1 + rng.below(16) as usize;
+        let mut m: i128 = rng.digits(len).parse().unwrap();
+        if rng.below(2) == 0 {
+            m = -m;
+        }
+        let scale = rng.below(27) as i32 - 10;
+        if scale < 0 {
+            Decimal::from_i128_with_scale(m * 10i128.pow(scale.unsigned_abs()), 0)
+        } else {
+            Decimal::from_i128_with_scale(m, scale as u32)
+        }
+    }
+
+    /// The key test for precision: every result marked Exact is the true
+    /// value, and every true value a decimal can hold is marked Exact.
+    #[test]
+    fn property_exact_means_exact() {
+        let mut rng = Rng(0x1234_5678_9abc_def1);
+        for op in [Op::Add, Op::Sub, Op::Mul] {
+            let mut checked = 0;
+            for _ in 0..20_000 {
+                let (a, b) = (reference_operand(&mut rng), reference_operand(&mut rng));
+                let truth = match op {
+                    Op::Add => Ref::of(a).add(Ref::of(b), false),
+                    Op::Sub => Ref::of(a).add(Ref::of(b), true),
+                    _ => Ref::of(a).mul(Ref::of(b)),
+                };
+                let Some(truth) = truth else { continue };
+                checked += 1;
+                let result = Num::exact(a).apply(op, Num::exact(b));
+                if let Ok(Num::Dec(d, Level::Exact)) = result {
+                    assert_eq!(Ref::of(d), truth, "{a} {op:?} {b} marked Exact as {d}");
+                }
+                if truth.fits() {
+                    assert!(
+                        matches!(result, Ok(Num::Dec(_, Level::Exact))),
+                        "{a} {op:?} {b} fits a decimal but is {result:?}"
+                    );
+                }
+            }
+            assert!(checked > 15_000, "{op:?}: only {checked} cases fit i128");
+        }
+
+        let mut checked = 0;
+        for _ in 0..20_000 {
+            let (a, b) = (reference_operand(&mut rng), reference_operand(&mut rng));
+            if b.is_zero() {
+                continue;
+            }
+            if let Ok(Num::Dec(q, Level::Exact)) = Num::exact(a).apply(Op::Div, Num::exact(b))
+                && let Some(back) = Ref::of(q).mul(Ref::of(b))
+            {
+                checked += 1;
+                assert_eq!(back, Ref::of(a), "{a} ÷ {b} marked Exact as {q}");
+            }
+        }
+        assert!(checked > 1000, "only {checked} exact quotients checked");
+    }
+
+    /// Typed operands of 1–10 digits as numbers, for the residue shapes.
+    fn residue_operand(rng: &mut Rng) -> Num {
+        Num::exact(Decimal::from_str(&typed_operand(rng)).unwrap())
+    }
+
+    #[test]
+    fn property_residue_shapes_cancel() {
+        let mut rng = Rng(0x0dd_ba11_cafe_f00d);
+        let (div, add, sub, mul) = (Op::Div, Op::Add, Op::Sub, Op::Mul);
+        for _ in 0..5000 {
+            let (a, b, c) = (
+                residue_operand(&mut rng),
+                residue_operand(&mut rng),
+                residue_operand(&mut rng),
+            );
+            let q = |x: Num| x.apply(div, b).unwrap();
+
+            let round_trip = q(a).apply(mul, b).unwrap().apply(sub, a).unwrap();
+            assert!(
+                round_trip.is_zero(),
+                "{a:?} ÷ {b:?} × b − a = {round_trip:?}"
+            );
+
+            let split = q(a).apply(add, q(c)).unwrap();
+            let whole = q(a.apply(add, c).unwrap());
+            let left = split.apply(sub, whole).unwrap();
+            assert!(
+                left.is_zero(),
+                "a÷b + c÷b − (a+c)÷b = {left:?} for {a:?} {b:?} {c:?}"
+            );
+
+            let mut sum = q(a);
+            for _ in 0..6 {
+                sum = sum.apply(add, q(a)).unwrap();
+            }
+            let seven = q(a.apply(mul, Num::exact(Decimal::from(7))).unwrap());
+            let left = sum.apply(sub, seven).unwrap();
+            assert!(
+                left.is_zero(),
+                "7 × (a÷b) summed − 7a÷b = {left:?} for {a:?} {b:?}"
+            );
+        }
     }
 
     /// A whole f64 past 2^53 isn't exact, so it isn't promoted with its noise.
