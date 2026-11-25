@@ -7,7 +7,7 @@ description = "A tiny, instant calculator for aliasOS"
 publish = false
 
 [dependencies]
-rust_decimal = { version = "1.43", default-features = false, features = ["std", "maths"] }
+rust_decimal = { version = "1.43", default-features = false, features = ["std"] }
 
 [profile.release]
 lto = "fat"
