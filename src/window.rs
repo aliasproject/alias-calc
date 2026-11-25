@@ -140,6 +140,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         size: DEFAULT_SIZE,
         scaling,
         configured: false,
+        drawn: false,
+        keyboard_seat: None,
         dirty: false,
         exit: false,
     };
@@ -159,6 +161,9 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
         }
         if app.dirty && app.configured {
             app.draw();
+            if let Some(seat) = app.keyboard_seat.take() {
+                app.bind_keyboard(&queue.handle(), &seat);
+            }
         }
         match queue.flush() {
             Ok(()) => {}
@@ -240,6 +245,10 @@ struct App {
     size: (u32, u32),
     scaling: Scaling,
     configured: bool,
+    /// A frame has been committed.
+    drawn: bool,
+    /// A seat whose keyboard waits for the first frame.
+    keyboard_seat: Option<wl_seat::WlSeat>,
     /// Something changed since the last frame.
     dirty: bool,
     exit: bool,
@@ -253,6 +262,13 @@ struct Repeat {
 }
 
 impl App {
+    fn bind_keyboard(&mut self, qh: &QueueHandle<Self>, seat: &wl_seat::WlSeat) {
+        match self.seats.get_keyboard(qh, seat, None) {
+            Ok(keyboard) => self.keyboard = Some(keyboard),
+            Err(err) => eprintln!("alias-calc: no keyboard: {err}"),
+        }
+    }
+
     fn press(&mut self, key: Key) {
         self.calc.press(key);
         self.dirty = true;
@@ -357,6 +373,7 @@ impl App {
             return;
         }
         self.window.commit();
+        self.drawn = true;
         if trace::on() {
             trace::mark(&format!("frame committed ({pw}x{ph} px)"));
         }
@@ -462,9 +479,13 @@ impl SeatHandler for App {
         capability: Capability,
     ) {
         if capability == Capability::Keyboard && self.keyboard.is_none() {
-            match self.seats.get_keyboard(qh, &seat, None) {
-                Ok(keyboard) => self.keyboard = Some(keyboard),
-                Err(err) => eprintln!("alias-calc: no keyboard: {err}"),
+            // Compiling the keymap takes ~1.5 ms, and the compositor sends it
+            // with the first configure. Nobody types in the first frame, so
+            // the keyboard is made right after it (see `event_loop`).
+            if self.drawn {
+                self.bind_keyboard(qh, &seat);
+            } else {
+                self.keyboard_seat = Some(seat.clone());
             }
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
@@ -488,6 +509,9 @@ impl SeatHandler for App {
         _: wl_seat::WlSeat,
         capability: Capability,
     ) {
+        if capability == Capability::Keyboard {
+            self.keyboard_seat = None;
+        }
         if capability == Capability::Keyboard
             && let Some(keyboard) = self.keyboard.take()
         {
