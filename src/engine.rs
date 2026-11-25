@@ -21,7 +21,7 @@
 //!
 //! Guard digits absorb one rounding, but a chain of them can still leave
 //! residue at the 20th digit (1 ÷ 3 ÷ 3 × 3 × 3 − 1). So a sum or difference
-//! that's at most 10⁻¹⁸ of its larger operand (10⁻¹⁴ when either is an
+//! that's at most 10⁻¹⁸ of its larger operand (10⁻¹⁵ when either is an
 //! `f64`) is cancellation, and is 0. That never hides a real difference
 //! between typed numbers: they carry at most 16 significant digits, so they
 //! differ by at least about 10⁻¹⁶ of their size. A pasted number with more
@@ -64,8 +64,11 @@ const SMALLEST_QUOTIENT_EXPONENT: i32 = QUOTIENT_DIGITS as i32 - 1 - DECIMAL_PLA
 /// larger operand is rounding left over from earlier steps, not a real
 /// difference, so it's 0. 10⁻¹⁸ for exact operands.
 const EXACT_CANCELLATION: Decimal = Decimal::from_parts(1, 0, 0, false, 18);
-/// The same for an `f64` operand, whose own error is about 10⁻¹⁶.
-const FLOAT_CANCELLATION: f64 = 1e-14;
+/// The same for an `f64` operand, whose own error is about 10⁻¹⁶: a few
+/// units in the last place snap, but a real difference against a number
+/// typed to 15 digits (`2 ^ 0.5 − 1.41421356237309`, 3.6 × 10⁻¹⁵ of it)
+/// is kept, as omacalc shows it.
+const FLOAT_CANCELLATION: f64 = 1e-15;
 
 /// What the display says when a calculation has no answer.
 pub const ERROR_TEXT: &str = "Error";
@@ -1116,6 +1119,12 @@ mod tests {
             "2e-16"
         );
         assert_eq!(shows("0 . 1 + 0 . 2 - 0 . 3 ="), "0");
+        // A float against a number typed to 15 digits keeps its difference.
+        let sqrt2 = shows("2 ^ . 5 - 1 . 4 1 4 2 1 3 5 6 2 3 7 3 0 9 =");
+        assert!(
+            sqrt2.starts_with("5.") && sqrt2.ends_with("e-15"),
+            "{sqrt2}"
+        );
         let rest = shows("1 ÷ 3 - . 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 =");
         assert!(
             rest.starts_with("3.333") && rest.ends_with("e-17"),
