@@ -34,7 +34,9 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 
+use crate::render::{Canvas, Fonts};
 use crate::trace;
+use crate::ui::{self, Palette, View};
 
 /// What people see in the launcher and the title bar. "Alias Calc" is the
 /// product name; the window says what it does.
@@ -44,14 +46,6 @@ const APP_ID: &str = "com.aliasproject.calc";
 /// Logical size when the compositor leaves it to us (a floating window).
 const DEFAULT_SIZE: (u32, u32) = (320, 480);
 const MIN_SIZE: (u32, u32) = (260, 380);
-
-/// Stand-in until the theme lands (ALI-2103).
-const BACKGROUND: [u8; 4] = argb(0x1a, 0x1b, 0x26);
-
-/// `wl_shm` ARGB8888 is little-endian: blue, green, red, alpha in memory.
-const fn argb(r: u8, g: u8, b: u8) -> [u8; 4] {
-    [b, g, r, 0xff]
-}
 
 /// Fractional scales arrive as 120ths (`wp_fractional_scale_v1`).
 const SCALE_DENOMINATOR: u32 = 120;
@@ -94,6 +88,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     window.commit();
     trace::mark("window requested");
 
+    // Parse the fonts while the compositor works on the configure.
+    let fonts = Fonts::load();
+    trace::mark("fonts loaded");
+
     let (w, h) = DEFAULT_SIZE;
     let pool = SlotPool::new((w * h * 4) as usize, &shm)?;
     let mut app = App {
@@ -103,6 +101,8 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         window,
         pool,
         buffer: None,
+        fonts,
+        palette: Palette::default(),
         size: DEFAULT_SIZE,
         scaling,
         configured: false,
@@ -166,6 +166,8 @@ struct App {
     window: Window,
     pool: SlotPool,
     buffer: Option<Buffer>,
+    fonts: Fonts,
+    palette: Palette,
     /// Logical size, in surface coordinates.
     size: (u32, u32),
     scaling: Scaling,
@@ -219,7 +221,14 @@ impl App {
             return;
         };
 
-        canvas.as_chunks_mut::<4>().0.fill(BACKGROUND);
+        let scale = pw as f32 / self.size.0 as f32;
+        let view = View {
+            expression: "",
+            display: "0",
+            pressed: None,
+        };
+        let mut canvas = Canvas::new(canvas, pw as usize, ph as usize);
+        ui::draw(&mut canvas, &mut self.fonts, &self.palette, &view, scale);
 
         let surface = self.window.wl_surface();
         match &self.scaling {
