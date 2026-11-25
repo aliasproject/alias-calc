@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 fontdue = { version = "0.9", default-features = false, features = ["std", "simd"] }
+rust_decimal = { version = "1.43", default-features = false, features = ["std", "maths"] }
 rustix = { version = "1", default-features = false, features = ["std", "event"] }
 smithay-client-toolkit = { version = "0.21", default-features = false }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
