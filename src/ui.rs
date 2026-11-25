@@ -79,8 +79,16 @@ fn role(label: &str) -> Role {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub background: Color,
+    /// The result and digit labels.
     pub foreground: Color,
+    /// The `=` key's fill.
     pub accent: Color,
+    /// The `=` key's fill while held.
+    pub accent_pressed: Color,
+    /// "Copied": the accent, made readable as small text on the background.
+    pub notice: Color,
+    /// ÷ × − +: the accent, made readable on the keys.
+    pub operator: Color,
     /// The expression line and the function keys' labels.
     pub muted: Color,
     pub key: Color,
@@ -89,27 +97,84 @@ pub struct Palette {
     pub on_accent: Color,
 }
 
+/// WCAG 2.2 AA: text needs 4.5:1; large text (24 px and up, which every key
+/// label and the result are) needs 3:1.
+const TEXT_CONTRAST: f32 = 4.5;
+const LARGE_CONTRAST: f32 = 3.0;
+
+const WHITE: Color = Color::rgb(255, 255, 255);
+const BLACK: Color = Color::rgb(0, 0, 0);
+
 impl Palette {
     pub fn new(background: Color, foreground: Color, accent: Color) -> Self {
         // 0.18 is where a color contrasts equally with black and white.
         let dark = background.luminance() < 0.18;
         let key = background.mix(foreground, if dark { 0.08 } else { 0.06 });
         let key_pressed = background.mix(foreground, if dark { 0.18 } else { 0.14 });
+        let accent_pressed = accent.mix(background, 0.25);
         // Whichever of background and foreground reads better on the accent.
         let on_accent = if contrast(accent, background) >= contrast(accent, foreground) {
             background
         } else {
             foreground
         };
+        // Every text colour is checked against every fill it's drawn on, and
+        // moved towards white or black until it passes, so a theme nobody
+        // tried still meets AA. Most themes need no change.
+        let keys = [key, key_pressed];
         Self {
             background,
-            foreground,
+            foreground: readable(foreground, &[background, key, key_pressed], LARGE_CONTRAST),
             accent,
-            muted: background.mix(foreground, 0.55),
+            accent_pressed,
+            notice: readable(accent, &[background], TEXT_CONTRAST),
+            operator: readable(accent, &keys, LARGE_CONTRAST),
+            // 65% of the way to the foreground clears 4.5:1 on every aliasOS
+            // theme as it is; `readable` covers the rest.
+            muted: readable(
+                readable(
+                    background.mix(foreground, 0.65),
+                    &[background],
+                    TEXT_CONTRAST,
+                ),
+                &[background, key, key_pressed],
+                LARGE_CONTRAST,
+            ),
             key,
             key_pressed,
-            on_accent,
+            on_accent: readable(on_accent, &[accent, accent_pressed], LARGE_CONTRAST),
         }
+    }
+}
+
+/// `ink`, or the nearest colour towards white or black that has at least
+/// `min` contrast with every one of `grounds`. Whichever direction needs the
+/// smaller step wins; if neither gets there, the better of white and black.
+fn readable(ink: Color, grounds: &[Color], min: f32) -> Color {
+    let worst = |c: Color| {
+        grounds
+            .iter()
+            .map(|&g| contrast(c, g))
+            .fold(f32::INFINITY, f32::min)
+    };
+    if worst(ink) >= min {
+        return ink;
+    }
+    for step in 1..=20 {
+        let t = step as f32 / 20.0;
+        let candidates = [ink.mix(WHITE, t), ink.mix(BLACK, t)];
+        let best = candidates
+            .into_iter()
+            .filter(|&c| worst(c) >= min)
+            .max_by(|&a, &b| worst(a).total_cmp(&worst(b)));
+        if let Some(c) = best {
+            return c;
+        }
+    }
+    if worst(WHITE) >= worst(BLACK) {
+        WHITE
+    } else {
+        BLACK
     }
 }
 
@@ -239,7 +304,7 @@ pub fn draw(
             size,
             notice,
             (right - w, baseline),
-            palette.accent,
+            palette.notice,
         );
     } else if !view.expression.is_empty() {
         let size = fonts.fit(
@@ -293,7 +358,7 @@ pub fn draw(
             let (fill, ink) = match role(label) {
                 Role::Equals => (
                     if pressed {
-                        palette.accent.mix(palette.background, 0.25)
+                        palette.accent_pressed
                     } else {
                         palette.accent
                     },
@@ -306,7 +371,7 @@ pub fn draw(
                         palette.key
                     };
                     let ink = match other {
-                        Role::Operator => palette.accent,
+                        Role::Operator => palette.operator,
                         Role::Function => palette.muted,
                         _ => palette.foreground,
                     };
@@ -534,8 +599,8 @@ mod tests {
         };
         let plain = rows(&draw_with(&mut fonts, None));
         let noted = rows(&draw_with(&mut fonts, Some("Copied")));
-        assert!(has(&plain, palette.muted) && !has(&plain, palette.accent));
-        assert!(has(&noted, palette.accent) && !has(&noted, palette.muted));
+        assert!(has(&plain, palette.muted) && !has(&plain, palette.notice));
+        assert!(has(&noted, palette.notice) && !has(&noted, palette.muted));
     }
 
     #[test]
@@ -549,6 +614,89 @@ mod tests {
                 "{w}x{h}"
             );
             assert!(layout.expression_baseline < layout.display_baseline);
+        }
+    }
+
+    /// Every text colour against every fill it's drawn on.
+    fn assert_aa(p: &Palette, theme: &str) {
+        let check = |what: &str, ink: Color, ground: Color, min: f32| {
+            let c = contrast(ink, ground);
+            assert!(c >= min, "{theme}: {what} is {c:.2}:1, needs {min}:1");
+        };
+        check("expression line", p.muted, p.background, TEXT_CONTRAST);
+        check("Copied", p.notice, p.background, TEXT_CONTRAST);
+        check("result", p.foreground, p.background, LARGE_CONTRAST);
+        for (fill, name) in [(p.key, "key"), (p.key_pressed, "held key")] {
+            check(
+                &format!("digit on {name}"),
+                p.foreground,
+                fill,
+                LARGE_CONTRAST,
+            );
+            check(
+                &format!("function label on {name}"),
+                p.muted,
+                fill,
+                LARGE_CONTRAST,
+            );
+            check(
+                &format!("operator on {name}"),
+                p.operator,
+                fill,
+                LARGE_CONTRAST,
+            );
+        }
+        check("= label", p.on_accent, p.accent, LARGE_CONTRAST);
+        check(
+            "= label held",
+            p.on_accent,
+            p.accent_pressed,
+            LARGE_CONTRAST,
+        );
+    }
+
+    #[test]
+    fn aliasos_themes_meet_aa_and_keep_their_colours() {
+        let hex = |h: &str| Color::from_hex(h).unwrap();
+        // The built-in palette and four themes from ~/.config/aliasos/themes.
+        for (name, bg, fg, accent) in [
+            ("built-in", "#1a1b26", "#c0caf5", "#7aa2f7"),
+            ("tarnished", "#0b111a", "#c5ced6", "#5e92c6"),
+            ("ember-night", "#081822", "#dce4e8", "#f0502a"),
+            ("papercraft", "#1a1a1c", "#d8ccb8", "#d9692e"),
+            ("night-city", "#0a0c10", "#d4e2e4", "#e8cf45"),
+        ] {
+            let p = Palette::new(hex(bg), hex(fg), hex(accent));
+            assert_aa(&p, name);
+            // These themes already pass: only muted moves.
+            assert_eq!(p.foreground, hex(fg), "{name}");
+            assert_eq!(p.notice, hex(accent), "{name}");
+            assert_eq!(p.operator, hex(accent), "{name}");
+            assert_eq!(p.muted, hex(bg).mix(hex(fg), 0.65), "{name}");
+        }
+        assert_eq!(Palette::default().muted, hex("#868dad"));
+    }
+
+    #[test]
+    fn any_theme_meets_aa() {
+        // xorshift, fixed seed: random dark, light and mid-tone themes.
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut color = || {
+            let v = next();
+            Color::rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8)
+        };
+        for i in 0..20_000 {
+            let (bg, fg, accent) = (color(), color(), color());
+            assert_aa(
+                &Palette::new(bg, fg, accent),
+                &format!("theme {i} {bg:?} {fg:?} {accent:?}"),
+            );
         }
     }
 
