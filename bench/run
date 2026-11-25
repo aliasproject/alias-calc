@@ -41,6 +41,9 @@ bench() {
 }
 
 bench alias-calc com.aliasproject.calc "$target/release/alias-calc"
+# The table still prints the others, but a run without Alias Calc's own row
+# is a failure.
+alias_calc_measured=${#results[@]}
 
 omacalc=${OMACALC:-$(command -v omacalc || true)}
 if [[ -n $omacalc ]]; then
@@ -62,3 +65,7 @@ if ((${#results[@]} == 0)); then
   exit 1
 fi
 printf '%s\n' "${results[@]}" | python3 -I bench/calcbench.py --table
+if ((alias_calc_measured == 0)); then
+  echo "Alias Calc wasn't measured." >&2
+  exit 1
+fi

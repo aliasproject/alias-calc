@@ -92,14 +92,6 @@ impl<'a> Canvas<'a> {
         Self { px, width, height }
     }
 
-    pub fn width(&self) -> usize {
-        self.width
-    }
-
-    pub fn height(&self) -> usize {
-        self.height
-    }
-
     pub fn fill(&mut self, color: Color) {
         self.px.fill(color.pixel());
     }
@@ -277,8 +269,9 @@ impl Fonts {
         m.height as f32 + m.ymin as f32
     }
 
-    /// The largest whole-pixel size, from `preferred` down to `min`, at
-    /// which `text` fits `max_width`; `min` if it doesn't fit even then.
+    /// A whole-pixel size, from `preferred` down to `min`, at which `text`
+    /// fits `max_width` (stepping down from a linear estimate, so at most a
+    /// pixel under the largest that fits); `min` if it doesn't fit even then.
     pub fn fit(&self, face: Face, preferred: f32, min: f32, text: &str, max_width: f32) -> f32 {
         let preferred = quantize(preferred);
         let min = quantize(min).min(preferred);

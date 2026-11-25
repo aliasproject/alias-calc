@@ -202,9 +202,16 @@ impl Layout {
 }
 
 /// Draws the whole screen. `scale` is buffer pixels per logical pixel.
-pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, palette: &Palette, view: &View, scale: f32) {
-    let width = canvas.width() as f32 / scale;
-    let height = canvas.height() as f32 / scale;
+/// `size` is the window's logical size, the same one `hit_test` is given,
+/// so both lay the keys out identically.
+pub fn draw(
+    canvas: &mut Canvas,
+    fonts: &mut Fonts,
+    palette: &Palette,
+    view: &View,
+    (width, height): (f32, f32),
+    scale: f32,
+) {
     let layout = Layout::new(fonts, width, height);
     let s = |v: f32| v * scale;
 
@@ -234,14 +241,19 @@ pub fn draw(canvas: &mut Canvas, fonts: &mut Fonts, palette: &Palette, view: &Vi
         );
     }
     // The engine keeps a number to 16 digits plus separators and sign, which
-    // fits at the minimum size in the narrowest window.
-    let size = fonts.fit(
+    // fits at the minimum size in a window of the minimum width. A window
+    // tiled narrower still shrinks the number further: a smaller number is
+    // still right, a clipped one isn't.
+    let mut size = fonts.fit(
         Face::Light,
         s(DISPLAY_SIZE),
         s(DISPLAY_MIN_SIZE),
         view.display,
         max_text,
     );
+    if fonts.width(Face::Light, size, view.display) > max_text {
+        size = fonts.fit(Face::Light, size, 1.0, view.display, max_text);
+    }
     let w = fonts.width(Face::Light, size, view.display);
     let baseline = s(layout.display_baseline);
     canvas.text(
@@ -431,6 +443,39 @@ mod tests {
     }
 
     #[test]
+    fn a_number_is_never_clipped_even_below_the_minimum_width() {
+        let mut fonts = Fonts::load();
+        let palette = Palette::default();
+        let display = "-9,999,999,999,999,999";
+        // Tiled to 180 px: narrower than MIN_SIZE allows.
+        let (w, h) = (180usize, 480usize);
+        let mut bytes = vec![0; w * h * 4];
+        let view = View {
+            expression: "",
+            display,
+            pressed: None,
+        };
+        draw(
+            &mut Canvas::new(&mut bytes, w, h),
+            &mut fonts,
+            &palette,
+            &view,
+            (180.0, 480.0),
+            1.0,
+        );
+        // Nothing of the result may touch the left padding.
+        let padding = PADDING as usize;
+        let display_rows = (PADDING as usize)..(480.0 * DISPLAY_SHARE) as usize;
+        let bg = palette.background;
+        for y in display_rows {
+            for x in 0..padding {
+                let p = &bytes[(y * w + x) * 4..(y * w + x) * 4 + 3];
+                assert_eq!((p[2], p[1], p[0]), (bg.r, bg.g, bg.b), "ink at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
     fn keypad_fits_inside_the_window() {
         let fonts = Fonts::load();
         for (w, h) in [(260.0, 380.0), (320.0, 480.0), (900.0, 1200.0)] {
@@ -480,6 +525,7 @@ mod tests {
             &mut fonts,
             &palette,
             &view,
+            (320.0, 480.0),
             2.0,
         );
         let runs = 200;
@@ -490,6 +536,7 @@ mod tests {
                 &mut fonts,
                 &palette,
                 &view,
+                (320.0, 480.0),
                 2.0,
             );
         }
