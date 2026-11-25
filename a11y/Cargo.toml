@@ -1,0 +1,17 @@
+[package]
+name = "alias-calc-a11y"
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Proprietary"
+description = "Alias Calc's screen reader bridge, loaded only when one is running"
+publish = false
+
+# A shared library that alias-calc loads with dlopen (src/a11y.rs there), so
+# AccessKit costs nothing when no screen reader runs.
+[lib]
+name = "alias_calc_a11y"
+crate-type = ["cdylib"]
+
+[dependencies]
+accesskit = "0.25"
+accesskit_unix = "0.24"

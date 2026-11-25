@@ -11,15 +11,21 @@ The keypad works with the mouse or the keyboard: `0-9 . + - * x / ^ %`, Enter or
 - Ctrl+C (or Super+C, or Ctrl+Insert) copies the result without separators.
 - Ctrl+V (or Super+V, or Shift+Insert) pastes a number, with or without separators: `1,234.5`, `1 234,5` and `12,34` all work. Anything that isn't a number is ignored.
 
+Tab and Shift+Tab move a focus ring through the keys, and the arrow keys move it around the grid; Space presses the focused key. Text follows the aliasOS text size (`aliasos-display-text-size`).
+
+With Orca running when it starts, the calculator works with the screen reader: each key is a named button, and the result is read out when it changes. Starting Orca later means reopening the calculator.
+
 Colors follow the live aliasOS theme (`~/.local/state/aliasos/current/theme/colors.toml`), falling back to Omarchy's, and change as soon as the theme does.
 
 ## Build
 
 ```sh
-cargo build --release
+cargo build --workspace --release
 ```
 
 The binary is `target/release/alias-calc`. The aim is to link nothing beyond libc and `libxkbcommon` (for keyboard layouts), with a pure-Rust Wayland client.
+
+Screen reader support is a separate library, `target/release/libalias_calc_a11y.so` (the `a11y/` crate, with AccessKit). The calculator loads it only when Orca is running, from beside its binary or from `/usr/lib/alias-calc/`, so without a screen reader it costs nothing. A package installs it to `/usr/lib/alias-calc/`.
 
 ## Benchmark
 
