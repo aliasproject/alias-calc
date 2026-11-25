@@ -13,9 +13,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 runs=10
-if [[ ${1:-} == --runs ]]; then runs=$2; fi
+while (($#)); do
+  case $1 in
+    --runs) runs=${2:?--runs needs a number}; shift 2 ;;
+    --runs=*) runs=${1#--runs=}; shift ;;
+    *) echo "Usage: bench/run [--runs N]" >&2; exit 2 ;;
+  esac
+done
 
 cargo build --release --locked --quiet
+target=$(cargo metadata --format-version 1 --no-deps | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 results=()
 
 bench() {
@@ -27,7 +34,10 @@ bench() {
   fi
 }
 
-bench alias-calc com.aliasproject.calc target/release/alias-calc
+bench alias-calc com.aliasproject.calc "$target/release/alias-calc"
+# The table still prints the others, but a run without Alias Calc's own row
+# is a failure.
+alias_calc_measured=${#results[@]}
 
 omacalc=${OMACALC:-$(command -v omacalc || true)}
 if [[ -n $omacalc ]]; then
@@ -44,4 +54,12 @@ if command -v gnome-calculator >/dev/null; then
   fi
 fi
 
+if ((${#results[@]} == 0)); then
+  echo "No app was measured." >&2
+  exit 1
+fi
 printf '%s\n' "${results[@]}" | python3 -I bench/calcbench.py --table
+if ((alias_calc_measured == 0)); then
+  echo "Alias Calc wasn't measured." >&2
+  exit 1
+fi
