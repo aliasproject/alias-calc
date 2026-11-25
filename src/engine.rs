@@ -8,11 +8,23 @@
 //! small numbers still work (shown to 15 significant digits, as omacalc does).
 //!
 //! The display rounds exact values to 16 significant digits, so every
-//! integer up to 9,999,999,999,999,999 shows exactly. A decimal keeps 28
-//! places rather than 28 significant digits, so a ×, ÷ or ^ result below
-//! 10⁻¹³ is worked out in `f64` instead and shows 15 digits. A fractional
-//! power is approximate, so it stays an `f64` too, unless the answer is
-//! exact (`4 ^ 0.5` is 2). Like C's `%g`, a value
+//! integer up to 9,999,999,999,999,999 shows exactly.
+//!
+//! Exact results are worked to a fixed precision, whatever their size: every
+//! sum, difference, product and power is rounded to 20 significant digits.
+//! A quotient (÷, or a power with a negative exponent, which is a
+//! reciprocal) keeps 22, unless it ends exactly. The two extra digits are
+//! guard digits: the next rounding to 20 absorbs the quotient's last-place
+//! error, so 1 ÷ 3 × 3 − 1 and 1 ÷ 7000 × 7000 − 1 are exactly 0. Twenty
+//! digits is still more than the 16 shown, so nothing a person can type or
+//! see is rounded by it.
+//!
+//! A decimal keeps 28 places rather than 28 significant digits, so small
+//! values can't carry those digits. A product or power below 10⁻¹³ (fewer
+//! than 16 digits in 28 places) and a quotient that doesn't end below 10⁻⁷
+//! (fewer than 22) are worked out in `f64` instead and show 15 digits, as
+//! omacalc does. A fractional power is approximate, so it stays an `f64`
+//! too, unless the answer is exact (`4 ^ 0.5` is 2). Like C's `%g`, a value
 //! switches to exponent form (`1.5e+20`, `1e-05`) when its exponent is below
 //! −4 or at least the precision (16 for exact values, 15 for `f64`).
 
@@ -25,12 +37,20 @@ use rust_decimal::{Decimal, MathematicalOps};
 const EXACT_DIGITS: u32 = 16;
 /// Significant digits shown for an `f64` value: what a double holds reliably.
 const FLOAT_DIGITS: u32 = 15;
-/// Significant digits every exact result except a division's is rounded to,
-/// leaving guard digits below a decimal's 28 (see [`Num::combine`]).
-const WORKING_DIGITS: u32 = 25;
-/// The smallest power of ten a decimal's 28 places still hold to 16
-/// significant digits (10⁻¹³ down to 10⁻²⁸).
-const SMALLEST_FULL_EXPONENT: i32 = -13;
+/// The working precision: every exact sum, difference, product and power is
+/// rounded to this many significant digits (see [`settle`]).
+const WORKING_DIGITS: u32 = 20;
+/// Quotients (÷, and powers with a negative exponent) keep two more digits,
+/// so the next rounding to [`WORKING_DIGITS`] absorbs their last-place error.
+const QUOTIENT_DIGITS: u32 = WORKING_DIGITS + 2;
+/// A decimal keeps this many places after the point, whatever its size.
+const DECIMAL_PLACES: i32 = 28;
+/// The smallest power of ten whose value 28 places hold to 16 significant
+/// digits: 10⁻¹³.
+const SMALLEST_FULL_EXPONENT: i32 = EXACT_DIGITS as i32 - 1 - DECIMAL_PLACES;
+/// The smallest power of ten whose value 28 places hold to 22 significant
+/// digits: 10⁻⁷.
+const SMALLEST_QUOTIENT_EXPONENT: i32 = QUOTIENT_DIGITS as i32 - 1 - DECIMAL_PLACES;
 
 /// What the display says when a calculation has no answer.
 pub const ERROR_TEXT: &str = "Error";
@@ -131,42 +151,32 @@ impl Num {
         }
     }
 
-    /// Applies the exact operation when both sides are exact and the
-    /// decimal holds the answer well; otherwise the `f64` one.
-    ///
-    /// `rounds`: round the result to [`WORKING_DIGITS`]. Division is the one
-    /// exact operation that is itself inexact (1 ÷ 3 stops after 28 places),
-    /// so its result keeps all 28 places, and every other result is rounded
-    /// to 25 significant digits. The digits below that are guard digits:
-    /// they absorb a division's last-place error, so 1 ÷ 3 × 3 is exactly 1
-    /// and 1 ÷ 3 × 3 − 1 is exactly 0, not −1e-28. Rounding the division
-    /// itself instead would keep its error (25 threes × 3 is 25 nines). 25
-    /// digits is still far more than the 16 shown, so nothing a person can
-    /// type or see is rounded by it.
-    ///
-    /// `loses_digits`: the operation can make more digits than it keeps
-    /// (× and ÷). A decimal keeps 28 places, not 28 significant digits, so a
-    /// result below 10⁻¹³ would show fewer than 16 digits, and one that
-    /// rounds to zero would be lost. Those are redone in `f64`.
+    /// Applies the exact operation when both sides are exact and [`settle`]
+    /// accepts its result; otherwise the `f64` one.
     fn combine(
         self,
         other: Num,
+        kind: Kind,
         exact: impl Fn(Decimal, Decimal) -> Option<Decimal>,
         float: impl Fn(f64, f64) -> f64,
-        rounds: bool,
-        loses_digits: bool,
     ) -> Answer {
         if let (Num::Exact(a), Num::Exact(b)) = (self, other)
             && let Some(result) = exact(a, b)
         {
-            let result = if rounds {
-                round_working(result)
-            } else {
-                result
+            let zero_ok = match kind {
+                Kind::Sum => true,
+                Kind::Product => a.is_zero() || b.is_zero(),
+                Kind::Quotient { .. } => a.is_zero(),
             };
-            let zero_ok = a.is_zero() || b.is_zero();
-            if !loses_digits || keeps_full_precision(result, zero_ok) {
-                return Ok(Num::Exact(result.normalize()));
+            // A quotient ends exactly when it multiplies back to the dividend.
+            let kind = match kind {
+                Kind::Quotient { .. } => Kind::Quotient {
+                    ends: result.checked_mul(b) == Some(a),
+                },
+                kind => kind,
+            };
+            if let Some(result) = settle(kind, result, zero_ok) {
+                return Ok(Num::Exact(result));
             }
         }
         Num::from_f64(float(self.to_f64(), other.to_f64()))
@@ -174,16 +184,24 @@ impl Num {
 
     fn apply(self, op: Op, other: Num) -> Answer {
         match op {
-            Op::Add => self.combine(other, Decimal::checked_add, |a, b| a + b, true, false),
-            Op::Sub => self.combine(other, Decimal::checked_sub, |a, b| a - b, true, false),
-            Op::Mul => self.combine(other, Decimal::checked_mul, |a, b| a * b, true, true),
+            Op::Add => self.combine(other, Kind::Sum, Decimal::checked_add, |a, b| a + b),
+            Op::Sub => self.combine(other, Kind::Sum, Decimal::checked_sub, |a, b| a - b),
+            Op::Mul => self.combine(other, Kind::Product, Decimal::checked_mul, |a, b| a * b),
             Op::Div => {
                 if other.is_zero() {
                     return Err(NoAnswer);
                 }
-                self.combine(other, Decimal::checked_div, |a, b| a / b, false, true)
+                let quotient = Kind::Quotient { ends: false };
+                self.combine(other, quotient, Decimal::checked_div, |a, b| a / b)
             }
             Op::Pow => self.pow(other),
+        }
+    }
+
+    fn negate(self) -> Num {
+        match self {
+            Num::Exact(d) => Num::Exact(-d),
+            Num::Float(f) => Num::Float(-f),
         }
     }
 
@@ -205,10 +223,9 @@ impl Num {
         if let (Num::Exact(base), Num::Exact(e)) = (self, exponent)
             && whole
             && let Ok(e) = i64::try_from(e.mantissa() / 10i128.pow(e.scale()))
-            && let Some(result) = base.checked_powi(e).map(round_working)
-            && keeps_full_precision(result, base.is_zero())
+            && let Some(result) = exact_integer_power(base, e)
         {
-            return Ok(Num::Exact(result.normalize()));
+            return Ok(Num::Exact(result));
         }
         Num::from_f64(self.to_f64().powf(exponent.to_f64()))
     }
@@ -222,22 +239,69 @@ impl Num {
     }
 }
 
-/// Rounds a result to the working precision (see [`Num::combine`]).
-fn round_working(value: Decimal) -> Decimal {
-    value.round_sf(WORKING_DIGITS).unwrap_or(value)
+/// What an exact operation was, for [`settle`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// + or −.
+    Sum,
+    /// × or a power with a non-negative exponent.
+    Product,
+    /// ÷ or a power with a negative exponent (a reciprocal). `ends`: the
+    /// quotient is exact, like 1 ÷ 8, rather than cut off, like 1 ÷ 3.
+    Quotient { ends: bool },
 }
 
-/// Whether an exact result of ×, ÷ or ^ still has every digit the display
-/// needs: it's at least 10⁻¹³, so 28 places hold 16 significant digits, or
-/// it's zero and zero is the true answer.
-fn keeps_full_precision(value: Decimal, zero_ok: bool) -> bool {
+/// The one rule for exact results: rounds `value`, the raw result of an
+/// exact operation, to the working precision, or says it must be redone in
+/// `f64` (`None`).
+///
+/// * A sum, difference, product or power is rounded to 20 significant
+///   digits ([`WORKING_DIGITS`]).
+/// * A quotient that's cut off is rounded to 22 ([`QUOTIENT_DIGITS`]). The
+///   next rounding to 20 absorbs its last-place error, so 1 ÷ 3 × 3 is
+///   exactly 1 and 1 ÷ 3000 × 3000 − 1 is exactly 0. The precision is the
+///   same at every size: guard digits counted in places (a decimal's 28)
+///   would run out for a small quotient like 1 ÷ 3000.
+/// * A quotient that ends exactly (1 ÷ 8) is kept as it is.
+/// * Small values can't carry those digits in 28 places, so they go to
+///   `f64`: a product or power below 10⁻¹³ (16 digits shown) and a cut-off
+///   quotient below 10⁻⁷ (22 digits kept). A zero is kept only when zero is
+///   the true answer (`zero_ok`), not when a tiny product rounded away.
+fn settle(kind: Kind, value: Decimal, zero_ok: bool) -> Option<Decimal> {
     if value.is_zero() {
-        return zero_ok;
+        return zero_ok.then_some(Decimal::ZERO);
     }
+    let (digits, smallest) = match kind {
+        Kind::Sum => (WORKING_DIGITS, i32::MIN),
+        Kind::Product => (WORKING_DIGITS, SMALLEST_FULL_EXPONENT),
+        Kind::Quotient { ends: true } => return Some(value.normalize()),
+        Kind::Quotient { ends: false } => (QUOTIENT_DIGITS, SMALLEST_QUOTIENT_EXPONENT),
+    };
+    if first_digit_exponent(value) < smallest {
+        return None;
+    }
+    Some(value.round_sf(digits).unwrap_or(value).normalize())
+}
+
+/// The power of ten the first significant digit of a non-zero value is worth.
+fn first_digit_exponent(value: Decimal) -> i32 {
     let normal = value.normalize();
     let digits = normal.mantissa().unsigned_abs().ilog10() as i32 + 1;
-    // The first digit is worth 10^(digits − 1 − scale).
-    digits - 1 - normal.scale() as i32 >= SMALLEST_FULL_EXPONENT
+    digits - 1 - normal.scale() as i32
+}
+
+/// `base ^ e` for a whole `e`, exactly, or `None` to work it out in `f64`. A
+/// negative power is the reciprocal of the positive one, so it's settled as
+/// a quotient and gets the same guard digits as 1 ÷ x.
+fn exact_integer_power(base: Decimal, e: i64) -> Option<Decimal> {
+    let power = base.checked_powu(e.unsigned_abs())?;
+    let power = settle(Kind::Product, power, base.is_zero())?;
+    if e >= 0 {
+        return Some(power);
+    }
+    let reciprocal = Decimal::ONE.checked_div(power)?;
+    let ends = reciprocal.checked_mul(power) == Some(Decimal::ONE);
+    settle(Kind::Quotient { ends }, reciprocal, false)
 }
 
 /// Rounds to 16 significant digits and lays the digits out.
@@ -245,12 +309,47 @@ fn format_exact(value: Decimal) -> String {
     if value.is_zero() {
         return "0".into();
     }
-    let rounded = value.round_sf(EXACT_DIGITS).unwrap_or(value).normalize();
-    let mantissa = rounded.mantissa();
-    let digits = mantissa.unsigned_abs().to_string();
+    let normal = value.normalize();
+    let mantissa = normal.mantissa();
+    let all = mantissa.unsigned_abs().to_string();
     // value = digits × 10^(−scale), so the first digit's power of ten is:
-    let exponent = digits.len() as i32 - 1 - rounded.scale() as i32;
-    layout(mantissa < 0, &digits, exponent, EXACT_DIGITS)
+    let exponent = all.len() as i32 - 1 - normal.scale() as i32;
+    // Rounded by hand: `round_sf` can't round a value near Decimal::MAX.
+    let (digits, carried) = round_digits(&all, EXACT_DIGITS as usize);
+    layout(
+        mantissa < 0,
+        &digits,
+        exponent + i32::from(carried),
+        EXACT_DIGITS,
+    )
+}
+
+/// Rounds a run of significant digits to `keep` of them, half away from
+/// zero. Returns the digits and whether rounding carried into a new leading
+/// digit (999… → 1000…).
+fn round_digits(digits: &str, keep: usize) -> (String, bool) {
+    if digits.len() <= keep {
+        return (digits.to_owned(), false);
+    }
+    let mut kept: Vec<u8> = digits.as_bytes()[..keep].to_vec();
+    if digits.as_bytes()[keep] >= b'5' {
+        let mut i = keep;
+        loop {
+            if i == 0 {
+                kept.insert(0, b'1');
+                kept.pop();
+                return (String::from_utf8(kept).unwrap_or_default(), true);
+            }
+            i -= 1;
+            if kept[i] == b'9' {
+                kept[i] = b'0';
+            } else {
+                kept[i] += 1;
+                break;
+            }
+        }
+    }
+    (String::from_utf8(kept).unwrap_or_default(), false)
 }
 
 fn format_float(value: f64) -> String {
@@ -360,7 +459,15 @@ fn parse_number(text: &str) -> Option<Num> {
         Some(d) if !(d.is_zero() && text.bytes().any(|b| (b'1'..=b'9').contains(&b))) => {
             Some(Num::Exact(d))
         }
-        _ => Num::from_f64(f64::from_str(text).ok()?).ok(),
+        _ => {
+            let value = f64::from_str(text).ok()?;
+            // 1e-400 reads as 0 in f64: refuse it rather than show 0.
+            let nonzero = mantissa.bytes().any(|b| (b'1'..=b'9').contains(&b));
+            if value == 0.0 && nonzero {
+                return None;
+            }
+            Num::from_f64(value).ok()
+        }
     }
 }
 
@@ -379,6 +486,10 @@ pub struct Calc {
     /// The number being typed, as typed ("5.", "-0", "1.50"), or a whole
     /// value in exponent form from a percent or paste.
     entry: String,
+    /// The exact value behind `entry` when the calculator set it (a percent,
+    /// a paste, or a result being edited), so using it doesn't lose what the
+    /// 16-digit text rounds off. Typing into the entry drops it.
+    entry_value: Option<Num>,
     /// After `=`: the exact result, its display text, and the expression.
     result: Option<(Num, String)>,
     evaluated: String,
@@ -468,6 +579,7 @@ impl Calc {
             self.clear();
         }
         self.entry = value.format();
+        self.entry_value = Some(value);
         true
     }
 
@@ -476,6 +588,7 @@ impl Calc {
             // A digit after `=` starts a new calculation.
             self.clear();
         }
+        self.entry_value = None;
         if in_exponent_form(&self.entry) {
             self.entry.clear();
         }
@@ -500,6 +613,7 @@ impl Calc {
         if self.errored || self.result.is_some() {
             self.clear();
         }
+        self.entry_value = None;
         if in_exponent_form(&self.entry) {
             self.entry.clear();
         }
@@ -522,8 +636,9 @@ impl Calc {
             self.evaluated.clear();
         }
         if !self.entry.is_empty() {
-            let value = seal(&self.entry);
+            let value = self.entry_num();
             self.entry.clear();
+            self.entry_value = None;
             self.tokens.push(Token::Num(value));
             self.tokens.push(Token::Op(op));
         } else if self.tokens.is_empty() {
@@ -543,8 +658,9 @@ impl Calc {
         }
         let mut tokens = std::mem::take(&mut self.tokens);
         if !self.entry.is_empty() {
-            tokens.push(Token::Num(seal(&self.entry)));
+            tokens.push(Token::Num(self.entry_num()));
             self.entry.clear();
+            self.entry_value = None;
         }
         // A trailing operator is dropped: 9 + = is 9.
         while let Some(Token::Op(_)) = tokens.last() {
@@ -569,7 +685,7 @@ impl Calc {
         if let Some((value, _)) = self.result.take() {
             self.evaluated.clear();
             match value.apply(Op::Div, Num::Exact(Decimal::ONE_HUNDRED)) {
-                Ok(percent) => self.entry = percent.format(),
+                Ok(percent) => self.set_entry(percent),
                 Err(NoAnswer) => self.errored = true,
             }
             return;
@@ -591,7 +707,7 @@ impl Calc {
             _ => value.apply(Op::Div, hundred),
         };
         match percent {
-            Ok(percent) => self.entry = percent.format(),
+            Ok(percent) => self.set_entry(percent),
             Err(NoAnswer) => {
                 let mut shown = self.tokens.clone();
                 shown.push(Token::Num(value));
@@ -599,6 +715,7 @@ impl Calc {
                 self.errored = true;
                 self.tokens.clear();
                 self.entry.clear();
+                self.entry_value = None;
             }
         }
     }
@@ -611,6 +728,7 @@ impl Calc {
             self.edit_result();
         }
         // With nothing typed, start a fresh negative number: 4 + ± 2 is 4 + -2.
+        self.entry_value = self.entry_value.map(Num::negate);
         if self.entry.is_empty() {
             self.entry.push_str("-0");
         } else if self.entry.starts_with('-') {
@@ -628,6 +746,7 @@ impl Calc {
         if self.result.is_some() {
             self.edit_result();
         }
+        self.entry_value = None;
         if in_exponent_form(&self.entry) {
             // Backspace on 1e+15 would leave 1e+1, which is 10: clear it.
             self.entry.clear();
@@ -643,6 +762,7 @@ impl Calc {
     fn clear(&mut self) {
         self.tokens.clear();
         self.entry.clear();
+        self.entry_value = None;
         self.result = None;
         self.evaluated.clear();
         self.errored = false;
@@ -651,18 +771,31 @@ impl Calc {
     /// Editing after `=` starts from the result's digits, with the old
     /// expression cleared.
     fn edit_result(&mut self) {
-        if let Some((_, text)) = self.result.take() {
+        if let Some((value, text)) = self.result.take() {
             self.entry = text;
+            self.entry_value = Some(value);
         }
         self.tokens.clear();
         self.evaluated.clear();
+    }
+
+    /// Shows a value the calculator worked out as the entry, keeping it exact.
+    fn set_entry(&mut self, value: Num) {
+        self.entry = value.format();
+        self.entry_value = Some(value);
+    }
+
+    /// The entry's number: its exact value if the calculator set it, else
+    /// what was typed.
+    fn entry_num(&self) -> Num {
+        self.entry_value.unwrap_or_else(|| seal(&self.entry))
     }
 
     /// The number the calculator is at: the one being typed, else the last
     /// one entered, else zero.
     fn current_value(&self) -> Num {
         if !self.entry.is_empty() {
-            return seal(&self.entry);
+            return self.entry_num();
         }
         self.tokens
             .iter()
@@ -695,7 +828,9 @@ fn significant_digits(entry: &str) -> usize {
     digits - usize::from(leading_zero)
 }
 
-/// `1,234` or `-1,234,567.89`: commas exactly every three digits.
+/// `1,234` or `-1,234,567.89`: commas exactly every three digits. A first
+/// group of just `0` isn't a thousands group, so `0,500` is a decimal comma
+/// (0.5), not 500.
 #[allow(dead_code)] // Only `paste` uses it so far.
 fn is_grouped(text: &str) -> bool {
     let body = text.strip_prefix('-').unwrap_or(text);
@@ -707,7 +842,8 @@ fn is_grouped(text: &str) -> bool {
     let Some(first) = groups.next() else {
         return false;
     };
-    let first_ok = (1..=3).contains(&first.len()) && first.bytes().all(|b| b.is_ascii_digit());
+    let first_ok =
+        (1..=3).contains(&first.len()) && first.bytes().all(|b| b.is_ascii_digit()) && first != "0";
     let mut rest = groups.peekable();
     let has_rest = rest.peek().is_some();
     first_ok
@@ -895,6 +1031,54 @@ mod tests {
         assert_eq!(shows("1 ÷ 3 = × 3 ="), "1");
         assert_eq!(shows("0 . 1 + 0 . 2 ="), "0.3");
         assert_eq!(shows("0 . 1 + 0 . 2 - 0 . 3 ="), "0");
+        // Small quotients get the same guard digits as large ones.
+        assert_eq!(shows("1 ÷ 3 0 0 0 × 3 0 0 0 - 1 ="), "0");
+        assert_eq!(shows("1 ÷ 3 0 0 0 0 × 3 0 0 0 0 - 1 ="), "0");
+        assert_eq!(shows("2 ÷ 3 0 0 0 0 0 × 3 0 0 0 0 0 - 2 ="), "0");
+        assert_eq!(shows("1 ÷ 7 0 0 0 × 7 0 0 0 - 1 ="), "0");
+        assert_eq!(shows("1 ÷ 3 0 0 0 = × 3 0 0 0 = - 1 ="), "0");
+        assert_eq!(shows("1 ÷ 3 0 0 0 0 × sign 3 0 0 0 0 + 1 ="), "0");
+        // Below 1e-7 a cut-off quotient is an f64, shown at 15 digits.
+        assert_eq!(
+            shows("1 ÷ 3 0 0 0 0 0 0 0 0 0 0 0 0 × 3 0 0 0 0 0 0 0 0 0 0 0 0 ="),
+            "1"
+        );
+        assert_eq!(
+            shows("1 ÷ 3 0 0 0 0 0 0 0 0 0 0 0 0 = × 3 0 0 0 0 0 0 0 0 0 0 0 0 ="),
+            "1"
+        );
+        // A quotient that ends stays exact at any size.
+        assert_eq!(
+            shows("1 ÷ 1 0 0 0 0 0 0 0 0 × 1 0 0 0 0 0 0 0 0 - 1 ="),
+            "0"
+        );
+        assert_eq!(shows("1 9 . 9 9 × 3 ="), "59.97");
+        assert_eq!(shows("1 ÷ 3 ÷ 7 × 2 1 - 1 ="), "0");
+        assert_eq!(
+            shows("1 0 ^ 2 7 + 1 - 1 0 ^ 2 7 ="),
+            "0",
+            "20 working digits drop the 1"
+        );
+    }
+
+    /// A negative power is a reciprocal and gets a quotient's guard digits.
+    #[test]
+    fn negative_powers_cancel() {
+        assert_eq!(shows("7 ^ 1 sign × 7 - 1 ="), "0");
+        assert_eq!(shows("3 ^ 1 sign × 3 - 1 ="), "0");
+        assert_eq!(shows("2 ^ 1 sign ="), "0.5");
+        assert_eq!(shows("2 ^ 3 sign ="), "0.125");
+        assert_eq!(shows("3 ^ 2 sign × 9 ="), "1");
+    }
+
+    /// % keeps the exact value, not its 16-digit text.
+    #[test]
+    fn percent_keeps_the_exact_value() {
+        assert_eq!(shows("1 ÷ 3 = % × 3 0 0 ="), "1");
+        assert_eq!(shows("1 ÷ 3 = % × 3 0 0 - 1 ="), "0");
+        // Editing it by hand goes back to the typed digits.
+        assert_eq!(shows("5 0 % 5"), "0.55");
+        assert_eq!(shows("1 ÷ 3 = % sign × 3 0 0 ="), "-1");
     }
 
     /// A fractional power is approximate, so arithmetic on it stays in f64.
@@ -1144,6 +1328,41 @@ mod tests {
         assert_eq!(calc.display(), "1,234");
         assert!(calc.paste("12345678901234567890"));
         assert_eq!(calc.display(), "1.234567890123457e+19");
+    }
+
+    /// A first group of just 0 can't be a thousands group.
+    #[test]
+    fn paste_reads_a_zero_comma_as_decimal() {
+        let mut calc = Calc::new();
+        assert!(calc.paste("0,123"));
+        assert_eq!(calc.display(), "0.123");
+        assert!(calc.paste("0,500"));
+        assert_eq!(calc.display(), "0.5");
+        assert!(calc.paste("-0,500"));
+        assert_eq!(calc.display(), "-0.5");
+        assert!(calc.paste("1,234"));
+        assert_eq!(calc.display(), "1,234");
+        assert!(calc.paste("12,34"));
+        assert_eq!(calc.display(), "12.34");
+        assert!(calc.paste("1 234,5"));
+        assert_eq!(calc.display(), "1,234.5");
+        assert!(!calc.paste("0,123,456"));
+        assert!(!calc.paste(",5"));
+    }
+
+    #[test]
+    fn paste_extremes() {
+        let mut calc = Calc::new();
+        assert!(calc.paste("79228162514264337593543950335"));
+        assert_eq!(calc.display(), "7.922816251426434e+28");
+        assert!(calc.paste("99999999999999999999"));
+        assert_eq!(calc.display(), "1e+20");
+        assert!(!calc.paste("1e-400"));
+        assert_eq!(calc.display(), "1e+20");
+        // A pasted long number is used exactly, though it shows 16 digits.
+        assert!(calc.paste("1234567890123456.7"));
+        press(&mut calc, "- 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 =");
+        assert_eq!(calc.display(), "0.7");
     }
 
     #[test]
