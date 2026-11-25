@@ -150,7 +150,15 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             Err(Errno::INTR) => continue,
             Err(err) => return Err(err.into()),
         }
-        if !fds[0].revents().contains(PollFlags::IN) {
+        let revents = fds[0].revents();
+        // A broken socket without data to read would make poll return at
+        // once forever; there's nothing to recover, so end.
+        if !revents.contains(PollFlags::IN)
+            && revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL)
+        {
+            return Err("lost the connection to the compositor".into());
+        }
+        if !revents.contains(PollFlags::IN) {
             // Only writable: go round and flush.
             drop(guard);
             continue;
