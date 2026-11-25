@@ -249,7 +249,8 @@ fn event_loop(
                 .map_or_else(idle, |f| PollFd::new(f, PollFlags::IN)),
         ];
         let polled = poll(&mut fds, timeout.as_ref());
-        let wayland_in = fds[0].revents().contains(PollFlags::IN);
+        let wayland_revents = fds[0].revents();
+        let wayland_in = wayland_revents.contains(PollFlags::IN);
         let theme_ready = theme_fd.is_some() && !fds[1].revents().is_empty();
         let paste_ready = paste_fd.is_some() && !fds[2].revents().is_empty();
         drop(theme_fd);
@@ -280,6 +281,13 @@ fn event_loop(
                     theme = None;
                 }
             }
+        }
+        // A broken socket without data to read would make poll return at
+        // once forever; there's nothing to recover, so end.
+        if !wayland_in
+            && wayland_revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL)
+        {
+            return Err("lost the connection to the compositor".into());
         }
         if !wayland_in {
             // Only writable, or only the theme: go round.
@@ -371,6 +379,7 @@ impl App {
             self.dirty = true;
         }
         self.repeat = None;
+        self.modifiers = Modifiers::default();
         // The data device belongs to the keyboard's seat; a keyboard bound
         // later (maybe on another seat) makes a new one.
         self.data_device = None;
@@ -580,7 +589,15 @@ impl App {
             pressed,
         };
         let mut canvas = Canvas::new(canvas, pw as usize, ph as usize);
-        ui::draw(&mut canvas, &mut self.fonts, &self.palette, &view, scale);
+        let logical = (self.size.0 as f32, self.size.1 as f32);
+        ui::draw(
+            &mut canvas,
+            &mut self.fonts,
+            &self.palette,
+            &view,
+            logical,
+            scale,
+        );
 
         let surface = self.window.wl_surface();
         match &self.scaling {
@@ -773,6 +790,9 @@ impl KeyboardHandler for App {
             self.dirty = true;
         }
         self.repeat = None;
+        // Modifiers released elsewhere aren't reported either; the next
+        // enter sends the real state.
+        self.modifiers = Modifiers::default();
     }
 
     fn press_key(
@@ -863,6 +883,11 @@ impl KeyboardHandler for App {
         _: u32,
     ) {
         self.modifiers = modifiers;
+        // A chord starting mid-repeat (Super for a shortcut) mustn't keep
+        // deleting digits.
+        if modifiers.ctrl || modifiers.alt || modifiers.logo {
+            self.repeat = None;
+        }
     }
 
     fn update_repeat_info(
@@ -905,7 +930,9 @@ impl PointerHandler for App {
                         cursor.set_shape(serial, Shape::Default);
                     }
                 }
-                PointerEventKind::Leave { .. } => {}
+                // A press that leaves without a release (the compositor
+                // took the pointer) is over.
+                PointerEventKind::Leave { .. } => self.mouse_down = None,
                 PointerEventKind::Press {
                     button: BTN_LEFT, ..
                 } => {
