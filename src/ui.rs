@@ -179,6 +179,13 @@ impl Palette {
             labels.pass(background, key, key_pressed),
             "key labels under 4.5:1"
         );
+        // Key outlines: the background moved towards the text, lifted to
+        // 3:1 (WCAG 1.4.11).
+        let border = readable(
+            background.mix(foreground, 0.35),
+            &[background],
+            NON_TEXT_CONTRAST,
+        );
         Self {
             background,
             foreground: labels.foreground,
@@ -191,22 +198,12 @@ impl Palette {
             key,
             key_pressed,
             on_accent,
-            border: readable(
-                background.mix(foreground, 0.35),
-                &[background],
-                NON_TEXT_CONTRAST,
-            ),
+            border,
             // Either of the = key's fills under 3:1 gets the outline.
             equals_border: [accent, accent_pressed]
                 .iter()
                 .any(|&f| contrast(f, background) < NON_TEXT_CONTRAST)
-                .then(|| {
-                    readable(
-                        background.mix(foreground, 0.35),
-                        &[background],
-                        NON_TEXT_CONTRAST,
-                    )
-                }),
+                .then_some(border),
             // The digits' colour already has 4.5:1 on the background.
             focus: labels.foreground,
         }
@@ -937,7 +934,7 @@ mod tests {
             Color::rgb(p[2], p[1], p[0])
         };
         let layout = Layout::new(&fonts, 320.0, 480.0, 1.0);
-        let (kx, ky, kw, kh) = layout.key_pixels(2, 1, 1.0);
+        let (kx, ky, _, kh) = layout.key_pixels(2, 1, 1.0);
         let plain = draw_with(&mut fonts, None);
         // The key's left edge, half way down, is outline; one in, fill.
         let mid = (ky + kh / 2.0) as usize;
@@ -952,7 +949,6 @@ mod tests {
             "no ring without focus"
         );
         assert_eq!(at(&focused, ring_x, mid), palette.focus);
-        let _ = kw;
     }
 
     #[test]
