@@ -3,6 +3,7 @@
 //! Layout is in logical pixels and multiplied by the scale when drawn, so
 //! it's the same at every scale and sharp at all of them.
 
+use crate::engine::{Key, Op};
 use crate::render::{Canvas, Color, Face, Fonts};
 
 /// The keypad, row by row, as its keys are labelled.
@@ -13,6 +14,45 @@ pub const KEYS: [[&str; 4]; 5] = [
     ["1", "2", "3", "+"],
     ["0", ".", "⌫", "="],
 ];
+
+/// The calculator key each keypad button presses, in the same order as
+/// [`KEYS`].
+const ACTIONS: [[Key; 4]; 5] = [
+    [Key::Clear, Key::Sign, Key::Percent, Key::Op(Op::Div)],
+    [
+        Key::Digit(7),
+        Key::Digit(8),
+        Key::Digit(9),
+        Key::Op(Op::Mul),
+    ],
+    [
+        Key::Digit(4),
+        Key::Digit(5),
+        Key::Digit(6),
+        Key::Op(Op::Sub),
+    ],
+    [
+        Key::Digit(1),
+        Key::Digit(2),
+        Key::Digit(3),
+        Key::Op(Op::Add),
+    ],
+    [Key::Digit(0), Key::Point, Key::Backspace, Key::Equals],
+];
+
+/// What the button at (row, column) presses.
+pub fn action(cell: (usize, usize)) -> Key {
+    ACTIONS[cell.0][cell.1]
+}
+
+/// The button for a key, to light it up while its keyboard key is held.
+/// `^` has no button.
+pub fn cell_of(key: Key) -> Option<(usize, usize)> {
+    ACTIONS
+        .iter()
+        .enumerate()
+        .find_map(|(row, keys)| keys.iter().position(|&k| k == key).map(|col| (row, col)))
+}
 
 /// How a key looks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +134,8 @@ fn contrast(a: Color, b: Color) -> f32 {
 pub struct View<'a> {
     pub expression: &'a str,
     pub display: &'a str,
-    /// The key held down with the mouse, as (row, column).
+    /// The key drawn pressed, held with the mouse or the keyboard, as
+    /// (row, column).
     pub pressed: Option<(usize, usize)>,
 }
 
@@ -280,7 +321,6 @@ pub fn draw(
 /// `width` by `height` logical pixels drawn at `scale`. It tests the same
 /// pixel-snapped rectangles that are drawn, so a click on a key's edge pixel
 /// presses that key.
-#[allow(dead_code)] // Mouse input uses it (ALI-2101).
 pub fn hit_test(
     fonts: &Fonts,
     (width, height): (f32, f32),
@@ -375,6 +415,31 @@ mod tests {
                 "scale {scale}"
             );
         }
+    }
+
+    #[test]
+    fn every_button_presses_the_key_its_label_says() {
+        for (row, labels) in KEYS.iter().enumerate() {
+            for (col, label) in labels.iter().enumerate() {
+                let key = action((row, col));
+                assert_eq!(cell_of(key), Some((row, col)), "{label}");
+                let expected = match *label {
+                    "C" => Key::Clear,
+                    "±" => Key::Sign,
+                    "%" => Key::Percent,
+                    "÷" => Key::Op(Op::Div),
+                    "×" => Key::Op(Op::Mul),
+                    "−" => Key::Op(Op::Sub),
+                    "+" => Key::Op(Op::Add),
+                    "." => Key::Point,
+                    "⌫" => Key::Backspace,
+                    "=" => Key::Equals,
+                    digit => Key::Digit(digit.parse().unwrap()),
+                };
+                assert_eq!(key, expected, "{label}");
+            }
+        }
+        assert_eq!(cell_of(Key::Op(Op::Pow)), None);
     }
 
     #[test]

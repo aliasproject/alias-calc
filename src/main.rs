@@ -3,6 +3,8 @@
 //! One thread, no toolkit, no GPU: a plain Wayland client that draws on the
 //! CPU into a shared-memory buffer and sleeps until something happens.
 
+mod engine;
+mod input;
 mod render;
 mod trace;
 mod ui;
