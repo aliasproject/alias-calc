@@ -371,7 +371,6 @@ impl Calc {
     }
 
     /// Whether the display shows an error.
-    #[allow(dead_code)] // Copy and paste use it (ALI-2102).
     pub fn is_error(&self) -> bool {
         self.errored
     }
@@ -380,7 +379,6 @@ impl Calc {
     /// around it, thousands separators in groups of three (`1,234,567.89`),
     /// a decimal comma (`1,5`) and the `−` this calculator shows. Anything
     /// else is ignored, and the return value says whether it was taken.
-    #[allow(dead_code)] // Copy and paste use it (ALI-2102).
     pub fn paste(&mut self, text: &str) -> bool {
         let mut text: String = text
             .trim()
@@ -626,7 +624,6 @@ fn significant_digits(entry: &str) -> usize {
 }
 
 /// `1,234` or `-1,234,567.89`: commas exactly every three digits.
-#[allow(dead_code)] // Only `paste` uses it so far.
 fn is_grouped(text: &str) -> bool {
     let body = text.strip_prefix('-').unwrap_or(text);
     let whole = body.split_once('.').map_or(body, |(w, _)| w);
