@@ -5,8 +5,8 @@
 //! `IN_MOVED_TO` for `theme` on its parent (the same event
 //! `aliasos-theme-changed` waits on). The theme directory itself briefly
 //! stops existing during the swap, so the parent is what's watched. Omarchy
-//! swaps a `theme` symlink (`IN_CREATE`) in `~/.config/omarchy/current`; the
-//! same watch covers it.
+//! swaps a `theme` symlink (`IN_CREATE` or `IN_MOVED_TO`) in
+//! `~/.config/omarchy/current`; the same watch covers it.
 
 use std::ffi::OsStr;
 use std::os::fd::{AsFd, OwnedFd};
@@ -19,37 +19,31 @@ use rustix::io::Errno;
 use crate::render::Color;
 use crate::ui::Palette;
 
-/// Where a theme lives: the `current` directory that holds `theme/`.
+/// Where themes live, in order: the `current` directories that hold
+/// `theme/`. Both paths are fixed under `$HOME`, as `aliasos-theme-apply` and
+/// Omarchy's scripts hard-code them (neither follows `XDG_STATE_HOME` or
+/// `XDG_CONFIG_HOME`).
 fn sources() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
     };
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home.join(".local/state"));
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home.join(".config"));
     vec![
-        state.join("aliasos/current"),
-        config.join("omarchy/current"),
+        home.join(".local/state/aliasos/current"),
+        home.join(".config/omarchy/current"),
     ]
 }
 
-/// The first theme source that exists: aliasOS, then Omarchy.
-fn current_dir() -> Option<PathBuf> {
-    sources().into_iter().find(|dir| dir.is_dir())
+/// The palette of the current theme: aliasOS's, or Omarchy's when aliasOS
+/// has none or it can't be read. None when neither gives one.
+pub fn load() -> Option<Palette> {
+    load_from(&sources())
 }
 
-/// Reads the palette from the current theme, or the built-in one when
-/// there's no theme or it can't be read.
-pub fn load() -> Palette {
-    current_dir()
-        .and_then(|dir| std::fs::read_to_string(dir.join("theme/colors.toml")).ok())
-        .and_then(|text| palette_from(&text))
-        .unwrap_or_default()
+fn load_from(sources: &[PathBuf]) -> Option<Palette> {
+    sources.iter().find_map(|dir| {
+        let text = std::fs::read_to_string(dir.join("theme/colors.toml")).ok()?;
+        palette_from(&text)
+    })
 }
 
 /// The palette a `colors.toml` describes. It needs `background` and
@@ -61,6 +55,10 @@ fn palette_from(text: &str) -> Option<Palette> {
     let mut accent = None;
     let mut blue = None;
     for line in text.lines() {
+        // The colors are top-level keys; a [table] after them isn't ours.
+        if line.trim_start().starts_with('[') {
+            break;
+        }
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
@@ -83,13 +81,17 @@ fn palette_from(text: &str) -> Option<Palette> {
     ))
 }
 
-/// `"#rrggbb"`, with optional quotes and a trailing `# comment`.
+/// `"#rrggbb"`, in double, single or no quotes, with an optional trailing
+/// `# comment`.
 fn color_value(value: &str) -> Option<Color> {
     let value = value.trim();
-    let value = match value.strip_prefix('"') {
+    let value = match value.chars().next() {
         // A quoted string ends at its closing quote; a comment may follow.
-        Some(rest) => &rest[..rest.find('"')?],
-        None => value.split_whitespace().next()?,
+        Some(quote @ ('"' | '\'')) => {
+            let rest = &value[1..];
+            &rest[..rest.find(quote)?]
+        }
+        _ => value.split_whitespace().next()?,
     };
     Color::from_hex(value)
 }
@@ -100,14 +102,21 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Starts watching the theme source's `current` directory. `None` when
-    /// there's no theme to follow or inotify isn't available.
+    /// Starts watching every theme source's `current` directory that exists,
+    /// so a fallback to Omarchy still sees an aliasOS theme arrive. `None`
+    /// when there's none, or inotify isn't available.
     pub fn new() -> Option<Self> {
-        let dir = current_dir()?;
+        Self::on(&sources())
+    }
+
+    fn on(sources: &[PathBuf]) -> Option<Self> {
         let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).ok()?;
         let flags = WatchFlags::MOVED_TO | WatchFlags::CREATE | WatchFlags::CLOSE_WRITE;
-        inotify::add_watch(&fd, &dir, flags).ok()?;
-        Some(Self { fd })
+        let watched = sources
+            .iter()
+            .filter(|dir| inotify::add_watch(&fd, dir.as_path(), flags).is_ok())
+            .count();
+        (watched > 0).then_some(Self { fd })
     }
 
     pub fn fd(&self) -> impl AsFd + '_ {
@@ -115,8 +124,9 @@ impl Watch {
     }
 
     /// Drains the pending events and says whether any touched the theme.
-    /// Call when the fd is readable.
-    pub fn changed(&self) -> bool {
+    /// Call when the fd is readable. An error means the watch is broken (its
+    /// fd would stay readable and spin the loop), so stop using it.
+    pub fn changed(&self) -> Result<bool, Errno> {
         let mut buf = [std::mem::MaybeUninit::uninit(); 4096];
         let mut reader = inotify::Reader::new(&self.fd, &mut buf);
         let mut changed = false;
@@ -132,8 +142,9 @@ impl Watch {
                         changed = true;
                     }
                 }
-                Err(Errno::AGAIN | Errno::INTR) => return changed,
-                Err(_) => return changed,
+                Err(Errno::AGAIN) => return Ok(changed),
+                Err(Errno::INTR) => continue,
+                Err(err) => return Err(err),
             }
         }
     }
@@ -157,6 +168,33 @@ background = "#0B111A"
 color4 = "#5482B4"
 "##;
 
+    /// A fresh directory under the system temp dir, removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "alias-calc-{name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_theme(current: &Path, colors: &str) {
+        std::fs::create_dir_all(current.join("theme")).unwrap();
+        std::fs::write(current.join("theme/colors.toml"), colors).unwrap();
+    }
+
     #[test]
     fn reads_an_aliasos_theme() {
         let palette = palette_from(TARNISHED).unwrap();
@@ -177,20 +215,56 @@ color4 = "#5482B4"
     }
 
     #[test]
-    fn tolerates_comments_spacing_and_bare_values() {
-        let text =
-            "background=\"#101010\" # dark\n  foreground =   #eeeeee   # bare\naccent = \"nope\"\n";
+    fn tolerates_comments_spacing_quotes_and_bare_values() {
+        let text = "background=\"#101010\" # dark\n  foreground =   #eeeeee   # bare\naccent = 'not a color'\ncolor4 = '#0000ff'\n";
         let palette = palette_from(text).unwrap();
         assert_eq!(palette.background, Color::rgb(0x10, 0x10, 0x10));
         assert_eq!(palette.foreground, Color::rgb(0xee, 0xee, 0xee));
-        // A bad accent is skipped, so the foreground stands in.
-        assert_eq!(palette.accent, palette.foreground);
+        // A bad accent is skipped, so the single-quoted blue stands in.
+        assert_eq!(palette.accent, Color::rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn ignores_tables_after_the_top_level_keys() {
+        let text = format!("{TARNISHED}\n[terminal]\nbackground = \"#ffffff\"\n");
+        let palette = palette_from(&text).unwrap();
+        assert_eq!(palette.background, Color::rgb(0x0b, 0x11, 0x1a));
     }
 
     #[test]
     fn needs_background_and_foreground() {
         assert!(palette_from("background = \"#000000\"\n").is_none());
         assert!(palette_from("").is_none());
+    }
+
+    #[test]
+    fn falls_back_to_omarchy_when_aliasos_has_no_usable_theme() {
+        let tmp = TempDir::new("fallback");
+        let aliasos = tmp.0.join("aliasos/current");
+        let omarchy = tmp.0.join("omarchy/current");
+        let sources = [aliasos.clone(), omarchy.clone()];
+        write_theme(
+            &omarchy,
+            "background = \"#222222\"\nforeground = \"#dddddd\"\n",
+        );
+
+        // aliasOS's current/ exists but has no theme yet.
+        std::fs::create_dir_all(&aliasos).unwrap();
+        let palette = load_from(&sources).unwrap();
+        assert_eq!(palette.background, Color::rgb(0x22, 0x22, 0x22));
+
+        // A broken aliasOS theme still falls back.
+        write_theme(&aliasos, "background = nope\n");
+        let palette = load_from(&sources).unwrap();
+        assert_eq!(palette.background, Color::rgb(0x22, 0x22, 0x22));
+
+        // A good aliasOS theme wins.
+        write_theme(&aliasos, TARNISHED);
+        let palette = load_from(&sources).unwrap();
+        assert_eq!(palette.background, Color::rgb(0x0b, 0x11, 0x1a));
+
+        // Neither: None, and the caller keeps what it has.
+        assert!(load_from(&[tmp.0.join("missing")]).is_none());
     }
 
     #[test]
@@ -202,25 +276,28 @@ color4 = "#5482B4"
     }
 
     #[test]
-    fn watch_sees_a_theme_swap() {
-        let dir = std::env::temp_dir().join(format!("alias-calc-theme-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("next-theme")).unwrap();
-        let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).unwrap();
-        inotify::add_watch(
-            &fd,
-            &dir,
-            WatchFlags::MOVED_TO | WatchFlags::CREATE | WatchFlags::CLOSE_WRITE,
-        )
-        .unwrap();
-        let watch = Watch { fd };
-        assert!(!watch.changed(), "nothing yet");
+    fn watch_sees_a_theme_swap_in_any_source() {
+        let tmp = TempDir::new("watch");
+        let aliasos = tmp.0.join("aliasos/current");
+        let omarchy = tmp.0.join("omarchy/current");
+        std::fs::create_dir_all(aliasos.join("next-theme")).unwrap();
+        std::fs::create_dir_all(&omarchy).unwrap();
+        let watch = Watch::on(&[aliasos.clone(), omarchy.clone()]).unwrap();
+        assert_eq!(watch.changed(), Ok(false), "nothing yet");
 
-        std::fs::write(dir.join("theme.name"), "x").unwrap();
-        assert!(!watch.changed(), "other entries don't count");
+        std::fs::write(aliasos.join("theme.name"), "x").unwrap();
+        assert_eq!(watch.changed(), Ok(false), "other entries don't count");
 
-        std::fs::rename(dir.join("next-theme"), dir.join("theme")).unwrap();
-        assert!(watch.changed(), "the swap counts");
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::rename(aliasos.join("next-theme"), aliasos.join("theme")).unwrap();
+        assert_eq!(watch.changed(), Ok(true), "aliasOS's mv counts");
+
+        std::os::unix::fs::symlink(&aliasos, omarchy.join("theme")).unwrap();
+        assert_eq!(watch.changed(), Ok(true), "Omarchy's symlink counts");
+    }
+
+    #[test]
+    fn no_watch_without_a_source() {
+        let tmp = TempDir::new("nowatch");
+        assert!(Watch::on(&[tmp.0.join("missing")]).is_none());
     }
 }

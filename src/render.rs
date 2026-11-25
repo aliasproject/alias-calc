@@ -23,8 +23,10 @@ impl Color {
 
     /// Parses `#rrggbb` (the `#` is optional).
     pub fn from_hex(hex: &str) -> Option<Self> {
-        let hex = hex.trim().trim_start_matches('#');
-        if hex.len() != 6 || !hex.is_ascii() {
+        let hex = hex.trim();
+        let hex = hex.strip_prefix('#').unwrap_or(hex);
+        // from_str_radix alone would take a leading '+'.
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
@@ -154,6 +156,7 @@ impl<'a> Canvas<'a> {
         color: Color,
     ) {
         let (x, baseline) = origin;
+        let size = quantize(size);
         let pixel = color.pixel();
         let mut pen = x;
         for ch in text.chars() {
@@ -176,13 +179,22 @@ impl<'a> Canvas<'a> {
                     blend(&mut row[px as usize], pixel, a as u32);
                 }
             }
-            pen += glyph.metrics.advance_width;
+            pen += glyph.metrics.advance_width.round();
         }
     }
 }
 
+/// Text sizes snap to whole pixels, so the glyph cache holds one entry per
+/// size actually drawn, and what's measured is what's rasterized.
+pub fn quantize(size: f32) -> f32 {
+    size.round().max(1.0)
+}
+
+/// More cached glyphs than this (a long run of resizes) empties the cache.
+const CACHE_LIMIT: usize = 512;
+
 /// The two embedded weights. Both are subsets of JetBrains Mono, the aliasOS
-/// monospace font: printable ASCII plus × ÷ − ± ⌫ (see fonts/README.md).
+/// monospace font: printable ASCII plus × ÷ − ± ⌫ … (see fonts/README.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Face {
     Regular,
@@ -198,8 +210,9 @@ struct Glyph {
 }
 
 /// The fonts and a cache of every glyph rasterized so far, keyed by face,
-/// character and size. A calculator shows a few dozen glyphs at three or four
-/// sizes, so the cache stays small and a frame almost never rasterizes.
+/// character and whole-pixel size. A calculator shows a few dozen glyphs at
+/// three or four sizes, so a frame almost never rasterizes; resizing through
+/// many sizes is bounded by `CACHE_LIMIT`.
 pub struct Fonts {
     regular: Font,
     light: Font,
@@ -230,9 +243,12 @@ impl Fonts {
         }
     }
 
+    /// `size` must already be quantized.
     fn glyph(&mut self, face: Face, ch: char, size: f32) -> &Glyph {
-        // Sizes are cached in 1/16 px steps.
-        let key = (face, ch, (size * 16.0).round() as u32);
+        let key = (face, ch, size as u32);
+        if self.cache.len() >= CACHE_LIMIT && !self.cache.contains_key(&key) {
+            self.cache.clear();
+        }
         let font = match face {
             Face::Regular => &self.regular,
             Face::Light => &self.light,
@@ -247,27 +263,61 @@ impl Fonts {
     /// character count times one advance.
     pub fn width(&self, face: Face, size: f32, text: &str) -> f32 {
         let font = self.font(face);
+        let size = quantize(size);
         text.chars()
-            .map(|ch| font.metrics(ch, size).advance_width)
+            .map(|ch| font.metrics(ch, size).advance_width.round())
             .sum()
     }
 
     /// The height of the digits above the baseline, for centring numbers
     /// and symbols optically.
     pub fn digit_height(&self, face: Face, size: f32) -> f32 {
-        let m = self.font(face).metrics('0', size);
+        let m = self.font(face).metrics('0', quantize(size));
         m.height as f32 + m.ymin as f32
     }
 
-    /// The largest size, up to `preferred`, at which `text` fits `max_width`.
-    pub fn fit(&self, face: Face, preferred: f32, text: &str, max_width: f32) -> f32 {
+    /// The largest whole-pixel size, from `preferred` down to `min`, at
+    /// which `text` fits `max_width`; `min` if it doesn't fit even then.
+    pub fn fit(&self, face: Face, preferred: f32, min: f32, text: &str, max_width: f32) -> f32 {
+        let preferred = quantize(preferred);
+        let min = quantize(min).min(preferred);
         let width = self.width(face, preferred, text);
         if width <= max_width || width <= 0.0 {
-            preferred
-        } else {
-            // Advance scales linearly with size.
-            (preferred * max_width / width).floor().max(1.0)
+            return preferred;
         }
+        // Advance scales about linearly with size; rounding can leave it a
+        // pixel over, so step down until it fits.
+        let mut size = (preferred * max_width / width)
+            .floor()
+            .clamp(min, preferred);
+        while size > min && self.width(face, size, text) > max_width {
+            size -= 1.0;
+        }
+        size
+    }
+
+    /// `text`, with characters dropped from the front and an ellipsis put
+    /// in their place until it fits `max_width`. The end of an expression
+    /// is the part being worked on, so it's the part kept.
+    pub fn elide_start<'t>(
+        &self,
+        face: Face,
+        size: f32,
+        text: &'t str,
+        max_width: f32,
+    ) -> std::borrow::Cow<'t, str> {
+        if self.width(face, size, text) <= max_width {
+            return text.into();
+        }
+        let mut chars = text.chars();
+        while chars.next().is_some() {
+            let rest = chars.as_str();
+            let candidate = format!("…{rest}");
+            if rest.is_empty() || self.width(face, size, &candidate) <= max_width {
+                return candidate.into();
+            }
+        }
+        "…".into()
     }
 }
 
@@ -299,6 +349,8 @@ mod tests {
         assert_eq!(Color::from_hex("#fff"), None);
         assert_eq!(Color::from_hex("#gg0000"), None);
         assert_eq!(Color::from_hex("#ééé"), None);
+        assert_eq!(Color::from_hex("#+1+2+3"), None);
+        assert_eq!(Color::from_hex("##ffffff"), None);
     }
 
     #[test]
@@ -345,7 +397,7 @@ mod tests {
     fn fonts_cover_every_symbol_the_app_shows() {
         let fonts = Fonts::load();
         for face in [Face::Regular, Face::Light] {
-            for ch in "0123456789.,+−×÷^%=()±⌫CEeor-".chars() {
+            for ch in "0123456789.,+−×÷^%=()±⌫…CEeor-".chars() {
                 assert_ne!(
                     fonts.font(face).lookup_glyph_index(ch),
                     0,
@@ -369,9 +421,50 @@ mod tests {
         );
 
         let wide = "123,456,789,012,345";
-        let size = fonts.fit(Face::Light, 64.0, wide, 200.0);
-        assert!(size < 64.0);
+        let size = fonts.fit(Face::Light, 64.0, 8.0, wide, 200.0);
+        assert!(size < 64.0 && size == size.round());
         assert!(fonts.width(Face::Light, size, wide) <= 200.0);
-        assert_eq!(fonts.fit(Face::Light, 64.0, "0", 200.0), 64.0);
+        assert_eq!(fonts.fit(Face::Light, 64.0, 8.0, "0", 200.0), 64.0);
+        // Too long to fit even at the minimum: the minimum, not 1 px.
+        assert_eq!(
+            fonts.fit(Face::Light, 64.0, 20.0, &"9".repeat(200), 200.0),
+            20.0
+        );
+    }
+
+    #[test]
+    fn elides_from_the_start() {
+        let fonts = Fonts::load();
+        let text = "1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9";
+        let advance = fonts.width(Face::Regular, 20.0, "0");
+        let max = advance * 10.0;
+        let elided = fonts.elide_start(Face::Regular, 20.0, text, max);
+        assert!(
+            elided.starts_with('…') && elided.ends_with("8 + 9"),
+            "{elided}"
+        );
+        assert!(fonts.width(Face::Regular, 20.0, &elided) <= max);
+        assert_eq!(fonts.elide_start(Face::Regular, 20.0, "12", max), "12");
+    }
+
+    #[test]
+    fn sizes_and_advances_are_whole_pixels() {
+        let fonts = Fonts::load();
+        // Measuring at 23.4 and 23.0 agree: both draw at 23.
+        assert_eq!(
+            fonts.width(Face::Regular, 23.4, "1234"),
+            fonts.width(Face::Regular, 23.0, "1234")
+        );
+        let w = fonts.width(Face::Regular, 23.0, "1234");
+        assert_eq!(w, w.round());
+    }
+
+    #[test]
+    fn glyph_cache_is_bounded() {
+        let mut fonts = Fonts::load();
+        for size in 1..2000 {
+            fonts.glyph(Face::Regular, '8', size as f32);
+        }
+        assert!(fonts.cache.len() <= CACHE_LIMIT);
     }
 }
