@@ -8,5 +8,5 @@ Icon=com.aliasproject.calc
 Terminal=false
 Categories=Utility;Calculator;
 Keywords=alias-calc;calc;math;arithmetic;Alias Calc;
-StartupNotify=true
+StartupNotify=false
 StartupWMClass=com.aliasproject.calc
