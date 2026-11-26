@@ -57,6 +57,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --release --locked
+      # The screen reader library as it's packaged: its own size-first profile.
+      - run: cargo build --profile release-a11y --locked -p alias-calc-a11y
       # aliasOS also runs on Apple Silicon: c_char is u8 there, so FFI
       # mistakes only show on aarch64. A type check needs no cross linker.
       - name: Type-check for aarch64
@@ -69,10 +71,25 @@ jobs:
       # ignored in the debug test run.
       - name: Performance budgets
         run: cargo test --release --locked -- --ignored budget_ --test-threads=1
-      - name: Benchmark scripts parse
+      - name: Scripts parse
         run: |
           python3 -m py_compile bench/calcbench.py
           bash -n bench/run
+          sh -n install.sh
+      # A staged install and uninstall of the release build, as the
+      # PKGBUILD does it, and the installed desktop entry checked.
+      - name: Install and uninstall
+        run: |
+          apt-get install -y -qq --no-install-recommends desktop-file-utils >/dev/null
+          stage=$(mktemp -d)
+          PREFIX=/usr DESTDIR="$stage" BIN=target/release/alias-calc \
+            LIB=target/release-a11y/libalias_calc_a11y.so ./install.sh
+          desktop-file-validate "$stage/usr/share/applications/com.aliasproject.calc.desktop"
+          test "$(find "$stage" -type f | wc -l)" -eq 6
+          grep -qx 'Exec="/usr/bin/alias-calc"' "$stage/usr/share/applications/com.aliasproject.calc.desktop"
+          PREFIX=/usr DESTDIR="$stage" ./install.sh uninstall
+          test "$(find "$stage" -type f | wc -l)" -eq 0
+          rm -rf "$stage"
       - name: Hand the workspace back to the runner user
         if: always()
         run: chown -R 1001:1001 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"

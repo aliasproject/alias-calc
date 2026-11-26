@@ -25,7 +25,16 @@ cargo build --workspace --release
 
 The binary is `target/release/alias-calc`. The aim is to link nothing beyond libc and `libxkbcommon` (for keyboard layouts), with a pure-Rust Wayland client.
 
-Screen reader support is a separate library, `target/release/libalias_calc_a11y.so` (the `a11y/` crate, with AccessKit). The calculator loads it only when Orca is running, from beside its binary or from `/usr/lib/alias-calc/`, so without a screen reader it costs nothing. A package installs it to `/usr/lib/alias-calc/`.
+Screen reader support is a separate library, `target/release/libalias_calc_a11y.so` (the `a11y/` crate, with AccessKit). The calculator loads it only when Orca is running, from beside its binary, from `lib/alias-calc/` beside the binary's `bin/` (where `install.sh` puts it), or from `/usr/lib/alias-calc/`, so without a screen reader it costs nothing. A package installs it to `/usr/lib/alias-calc/`, built with its own size-first profile (`cargo build --profile release-a11y -p alias-calc-a11y`, into `target/release-a11y/`): 1.9 MB instead of 2.7 MB.
+
+## Install
+
+```sh
+./install.sh              # build, then install into ~/.local
+./install.sh uninstall
+```
+
+It installs `bin/alias-calc`, the screen reader library in `lib/alias-calc/`, the desktop entry (`packaging/com.aliasproject.calc.desktop`, "Calculator" in the launcher) and the icons (`packaging/icons`). aliasOS packages it from the `alias-calc` PKGBUILD in aliasos-pkgs, which builds both first and then runs `PREFIX=/usr DESTDIR="$pkgdir" BIN=target/release/alias-calc LIB=target/release-a11y/libalias_calc_a11y.so ./install.sh`: with `BIN` and `LIB` set, nothing is built.
 
 ## Benchmark
 
