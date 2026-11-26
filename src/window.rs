@@ -12,12 +12,20 @@ use std::time::{Duration, Instant};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
+use smithay_client_toolkit::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
+use smithay_client_toolkit::data_device_manager::data_source::{
+    CopyPasteSource, DataSourceHandler,
+};
+use smithay_client_toolkit::data_device_manager::{DataDeviceManagerState, WritePipe};
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::backend::WaylandError;
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
+use smithay_client_toolkit::reexports::client::protocol::wl_data_device_manager::DndAction;
 use smithay_client_toolkit::reexports::client::protocol::{
-    wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface,
+    wl_data_device::WlDataDevice, wl_data_source::WlDataSource, wl_keyboard, wl_output, wl_pointer,
+    wl_seat, wl_shm, wl_surface,
 };
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -46,9 +54,11 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 
+use crate::clipboard::{self, Paste, Progress};
 use crate::engine::{Calc, Key};
 use crate::input;
 use crate::render::{Canvas, Fonts};
+use crate::theme;
 use crate::trace;
 use crate::ui::{self, Palette, View};
 
@@ -87,6 +97,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         globals.bind(&qh, 1..=1, NoEvents).ok();
     let viewporter: Option<WpViewporter> = globals.bind(&qh, 1..=1, NoEvents).ok();
     let cursor_shape = CursorShapeManager::bind(&globals, &qh).ok();
+    let data_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
 
     let surface = compositor.create_surface(&qh);
     let scaling = match (fractional_manager, viewporter) {
@@ -113,6 +124,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     // Parse the fonts while the compositor works on the configure.
     let fonts = Fonts::load();
     trace::mark("fonts loaded");
+    // Watch first, so a theme swapped in between isn't missed.
+    let theme_watch = theme::Watch::new();
+    let palette = theme::load().unwrap_or_default();
+    trace::mark("theme read");
 
     let (w, h) = DEFAULT_SIZE;
     let pool = SlotPool::new((w * h * 4) as usize, &shm)?;
@@ -126,6 +141,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         cursor: None,
         modifiers: Modifiers::default(),
         calc: Calc::new(),
+        data_manager,
+        data_device: None,
+        copied: None,
+        paste: None,
         mouse_down: None,
         mouse_at: (0.0, 0.0),
         key_down: None,
@@ -136,7 +155,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         pool,
         buffer: None,
         fonts,
-        palette: Palette::default(),
+        palette,
         size: DEFAULT_SIZE,
         scaling,
         configured: false,
@@ -148,15 +167,20 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         exit: false,
     };
 
-    event_loop(&mut queue, &mut app)
+    event_loop(&mut queue, &mut app, theme_watch)
 }
 
 type Queue = smithay_client_toolkit::reexports::client::EventQueue<App>;
 
 /// Dispatch, draw if anything changed, then sleep until the compositor
-/// writes to the socket. The only timeout is a held Backspace's next
-/// repeat, so an idle window never wakes.
-fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
+/// writes to the socket, the theme changes or a paste arrives. The only timeout is a held
+/// Backspace's next repeat, so an idle window never wakes. `theme` is None
+/// when there's no theme to follow.
+fn event_loop(
+    queue: &mut Queue,
+    app: &mut App,
+    mut theme: Option<theme::Watch>,
+) -> Result<(), Box<dyn Error>> {
     loop {
         queue.dispatch_pending(app)?;
         if app.exit {
@@ -194,12 +218,15 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             continue;
         };
         let fd = guard.connection_fd();
+        let theme_fd = theme.as_ref().map(|w| w.fd());
+        // Out of `app` while polled, so its fd can be borrowed alongside.
+        let mut paste = app.paste.take();
+        let paste_fd = paste.as_ref().map(|p| p.fd());
         let flags = if unsent {
             PollFlags::IN | PollFlags::OUT
         } else {
             PollFlags::IN
         };
-        let mut fds = [PollFd::new(&fd, flags)];
         // Only a held Backspace sets a timeout; otherwise sleep until the
         // compositor sends something.
         let timeout = app.repeat.as_ref().map(|r| {
@@ -209,7 +236,31 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
                 tv_nsec: wait.subsec_nanos() as _,
             }
         });
-        match poll(&mut fds, timeout.as_ref()) {
+        // Without a theme watch or a paste, a slot polls the Wayland fd
+        // again with no events asked for. It's never read in that case.
+        let idle = || PollFd::from_borrowed_fd(fd, PollFlags::empty());
+        let mut fds = [
+            PollFd::new(&fd, flags),
+            theme_fd
+                .as_ref()
+                .map_or_else(idle, |f| PollFd::new(f, PollFlags::IN)),
+            paste_fd
+                .as_ref()
+                .map_or_else(idle, |f| PollFd::new(f, PollFlags::IN)),
+        ];
+        let polled = poll(&mut fds, timeout.as_ref());
+        let wayland_revents = fds[0].revents();
+        let wayland_in = wayland_revents.contains(PollFlags::IN);
+        let theme_ready = theme_fd.is_some() && !fds[1].revents().is_empty();
+        let paste_ready = paste_fd.is_some() && !fds[2].revents().is_empty();
+        drop(theme_fd);
+        drop(paste_fd);
+        // Before anything that can `continue`, so the paste is never lost.
+        if paste_ready && let Some(mut reading) = paste.take() {
+            paste = app.paste_progress(reading.read(), reading);
+        }
+        app.paste = paste;
+        match polled {
             // The repeat's time came: the top of the loop fires it.
             Ok(0) => {
                 drop(guard);
@@ -219,16 +270,27 @@ fn event_loop(queue: &mut Queue, app: &mut App) -> Result<(), Box<dyn Error>> {
             Err(Errno::INTR) => continue,
             Err(err) => return Err(err.into()),
         }
-        let revents = fds[0].revents();
+        if theme_ready && let Some(watch) = &theme {
+            match watch.changed() {
+                Ok(true) => app.reload_theme(),
+                Ok(false) => {}
+                // A broken watch would keep the fd readable and spin the
+                // loop: stop following the theme instead.
+                Err(err) => {
+                    eprintln!("alias-calc: stopped following the theme: {err}");
+                    theme = None;
+                }
+            }
+        }
         // A broken socket without data to read would make poll return at
         // once forever; there's nothing to recover, so end.
-        if !revents.contains(PollFlags::IN)
-            && revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL)
+        if !wayland_in
+            && wayland_revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL)
         {
             return Err("lost the connection to the compositor".into());
         }
-        if !revents.contains(PollFlags::IN) {
-            // Only writable: go round and flush.
+        if !wayland_in {
+            // Only writable, or only the theme: go round.
             drop(guard);
             continue;
         }
@@ -268,6 +330,12 @@ struct App {
     cursor: Option<WpCursorShapeDeviceV1>,
     modifiers: Modifiers,
     calc: Calc,
+    /// Copy and paste; None when the compositor has no data device manager.
+    data_manager: Option<DataDeviceManagerState>,
+    data_device: Option<DataDevice>,
+    /// What this app last copied, while it still owns the selection.
+    copied: Option<(CopyPasteSource, String)>,
+    paste: Option<Paste>,
     /// The button the left mouse button went down on.
     mouse_down: Option<(usize, usize)>,
     /// The pointer's last logical position.
@@ -312,6 +380,9 @@ impl App {
         }
         self.repeat = None;
         self.modifiers = Modifiers::default();
+        // The data device belongs to the keyboard's seat; a keyboard bound
+        // later (maybe on another seat) makes a new one.
+        self.data_device = None;
     }
 
     /// Forgets the pointer and a button it held down.
@@ -333,6 +404,58 @@ impl App {
         match self.seats.get_keyboard(qh, seat, None) {
             Ok(keyboard) => self.keyboard = Some(keyboard),
             Err(err) => eprintln!("alias-calc: no keyboard: {err}"),
+        }
+        // Copy and paste are keyboard shortcuts, so they share its seat.
+        if self.data_device.is_none()
+            && let Some(manager) = &self.data_manager
+        {
+            self.data_device = Some(manager.get_data_device(qh, seat));
+        }
+    }
+
+    /// Ctrl+C: offers the result, without separators. An error isn't copied.
+    fn copy(&mut self, qh: &QueueHandle<Self>, serial: u32) {
+        if self.calc.is_error() {
+            return;
+        }
+        let (Some(manager), Some(device)) = (&self.data_manager, &self.data_device) else {
+            return;
+        };
+        let source = manager.create_copy_paste_source(qh, clipboard::OFFERED);
+        source.set_selection(device, serial);
+        // Replacing the old source destroys it.
+        self.copied = Some((source, self.calc.copy_text()));
+    }
+
+    /// Ctrl+V: starts reading the selection; `event_loop` finishes it.
+    fn paste(&mut self) {
+        let Some(offer) = self
+            .data_device
+            .as_ref()
+            .and_then(|d| d.data().selection_offer())
+        else {
+            return;
+        };
+        let Some(format) = offer.with_mime_types(clipboard::pick_format) else {
+            return;
+        };
+        // A paste that can't start leaves one still being read alone.
+        if let Some(paste) = offer.receive(format).ok().and_then(Paste::new) {
+            self.paste = Some(paste);
+        }
+    }
+
+    /// Takes a paste's read result: keeps reading, or pastes the text.
+    fn paste_progress(&mut self, progress: Progress, reading: Paste) -> Option<Paste> {
+        match progress {
+            Progress::Pending => Some(reading),
+            Progress::Done(text) => {
+                if self.calc.paste(&text) {
+                    self.dirty = true;
+                }
+                None
+            }
+            Progress::Dropped => None,
         }
     }
 
@@ -363,6 +486,17 @@ impl App {
     fn press(&mut self, key: Key) {
         self.calc.press(key);
         self.dirty = true;
+    }
+
+    /// Reads the theme again. A theme that can't be read keeps the colors
+    /// already showing rather than flashing the built-in ones.
+    fn reload_theme(&mut self) {
+        let Some(palette) = theme::load() else { return };
+        if palette != self.palette {
+            self.palette = palette;
+            self.dirty = true;
+            trace::mark("theme changed");
+        }
     }
 
     fn repeat_tick(&mut self) {
@@ -664,14 +798,31 @@ impl KeyboardHandler for App {
     fn press_key(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
-        _: u32,
+        serial: u32,
         event: KeyEvent,
     ) {
-        // Ctrl, Alt and Super chords belong to the compositor and to copy
-        // and paste (ALI-2102), never to the keypad.
-        if self.modifiers.ctrl || self.modifiers.alt || self.modifiers.logo {
+        let m = self.modifiers;
+        // Ctrl+C / Super+C copy and Ctrl+V / Super+V paste, as in omacalc.
+        // aliasOS's universal Super+C/V reach apps as Ctrl+C/V, or as
+        // Ctrl+Insert / Shift+Insert for some, so those work too.
+        if (m.ctrl || m.logo) && !m.alt && !m.shift {
+            match event.keysym {
+                // Only the main Insert key: Shift or Ctrl with numpad 0 under
+                // NumLock is KP_Insert, and that should stay a 0.
+                Keysym::c | Keysym::C | Keysym::Insert => self.copy(qh, serial),
+                Keysym::v | Keysym::V => self.paste(),
+                _ => {}
+            }
+            return;
+        }
+        if m.shift && !m.ctrl && !m.alt && !m.logo && event.keysym == Keysym::Insert {
+            self.paste();
+            return;
+        }
+        // Other chords belong to the compositor, never to the keypad.
+        if m.ctrl || m.alt || m.logo {
             return;
         }
         let Some(key) = input::key_for(event.keysym) else {
@@ -805,6 +956,85 @@ impl PointerHandler for App {
             }
         }
     }
+}
+
+impl DataDeviceHandler for App {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataDevice,
+        _: f64,
+        _: f64,
+        _: &wl_surface::WlSurface,
+    ) {
+    }
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
+    // The selection is read only when Ctrl+V asks for it.
+    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+}
+
+impl DataOfferHandler for App {
+    fn source_actions(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
+    fn selected_action(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
+}
+
+impl DataSourceHandler for App {
+    fn accept_mime(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataSource,
+        _: Option<String>,
+    ) {
+    }
+
+    fn send_request(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        source: &WlDataSource,
+        _: String,
+        mut fd: WritePipe,
+    ) {
+        use std::io::Write;
+        // A number is far smaller than a pipe's buffer, so this never blocks.
+        if let Some((ours, text)) = &self.copied
+            && ours.inner() == source
+        {
+            let _ = fd.write_all(text.as_bytes());
+        }
+    }
+
+    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        if self
+            .copied
+            .as_ref()
+            .is_some_and(|(ours, _)| ours.inner() == source)
+        {
+            self.copied = None;
+        }
+    }
+
+    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }
 
 impl ShmHandler for App {

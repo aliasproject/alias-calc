@@ -4,6 +4,15 @@ A tiny, instant calculator for aliasOS. It starts faster, uses less memory and w
 
 Linear project: Alias Calc (P-ALI-28).
 
+## Use
+
+The keypad works with the mouse or the keyboard: `0-9 . + - * x / ^ %`, Enter or `=`, Backspace (held, it repeats), `C` or Escape to clear, and `S` to change sign. The numpad works with NumLock on or off.
+
+- Ctrl+C (or Super+C, or Ctrl+Insert) copies the result without separators.
+- Ctrl+V (or Super+V, or Shift+Insert) pastes a number, with or without separators: `1,234.5`, `1 234,5` and `12,34` all work. Anything that isn't a number is ignored.
+
+Colors follow the live aliasOS theme (`~/.local/state/aliasos/current/theme/colors.toml`), falling back to Omarchy's, and change as soon as the theme does.
+
 ## Build
 
 ```sh

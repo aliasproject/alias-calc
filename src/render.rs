@@ -22,7 +22,6 @@ impl Color {
     }
 
     /// Parses `#rrggbb` (the `#` is optional).
-    #[allow(dead_code)] // The theme reader uses it (ALI-2103).
     pub fn from_hex(hex: &str) -> Option<Self> {
         let hex = hex.trim();
         let hex = hex.strip_prefix('#').unwrap_or(hex);
