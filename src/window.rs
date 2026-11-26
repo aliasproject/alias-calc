@@ -75,6 +75,9 @@ const MIN_SIZE: (u32, u32) = (260, 380);
 const DEFAULT_REPEAT: (Duration, Duration) =
     (Duration::from_millis(600), Duration::from_millis(40));
 
+/// How long "Copied" shows after a copy.
+const NOTICE_TIME: Duration = Duration::from_millis(1200);
+
 /// The left mouse button (linux/input-event-codes.h BTN_LEFT).
 const BTN_LEFT: u32 = 0x110;
 
@@ -141,6 +144,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         cursor: None,
         modifiers: Modifiers::default(),
         calc: Calc::new(),
+        notice_until: None,
         data_manager,
         data_device: None,
         copied: None,
@@ -173,8 +177,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 type Queue = smithay_client_toolkit::reexports::client::EventQueue<App>;
 
 /// Dispatch, draw if anything changed, then sleep until the compositor
-/// writes to the socket, the theme changes or a paste arrives. The only timeout is a held
-/// Backspace's next repeat, so an idle window never wakes. `theme` is None
+/// writes to the socket, the theme changes or a paste arrives. The only
+/// timeouts are a held Backspace's next repeat and the end of a showing
+/// "Copied", so an idle window never wakes. `theme` is None
 /// when there's no theme to follow.
 fn event_loop(
     queue: &mut Queue,
@@ -194,6 +199,13 @@ fn event_loop(
             .is_some_and(|r| r.next <= Instant::now())
         {
             app.repeat_tick();
+        }
+        if app
+            .notice_until
+            .is_some_and(|until| until <= Instant::now())
+        {
+            app.notice_until = None;
+            app.dirty = true;
         }
         if app.dirty && app.configured {
             app.draw()?;
@@ -227,10 +239,14 @@ fn event_loop(
         } else {
             PollFlags::IN
         };
-        // Only a held Backspace sets a timeout; otherwise sleep until the
-        // compositor sends something.
-        let timeout = app.repeat.as_ref().map(|r| {
-            let wait = r.next.saturating_duration_since(Instant::now());
+        // Only a held Backspace or a showing "Copied" sets a timeout;
+        // otherwise sleep until something arrives.
+        let deadline = match (app.repeat.as_ref().map(|r| r.next), app.notice_until) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let timeout = deadline.map(|next| {
+            let wait = next.saturating_duration_since(Instant::now());
             Timespec {
                 tv_sec: wait.as_secs() as _,
                 tv_nsec: wait.subsec_nanos() as _,
@@ -261,7 +277,8 @@ fn event_loop(
         }
         app.paste = paste;
         match polled {
-            // The repeat's time came: the top of the loop fires it.
+            // A repeat or the end of "Copied" came due: the top of the
+            // loop handles both.
             Ok(0) => {
                 drop(guard);
                 continue;
@@ -330,6 +347,8 @@ struct App {
     cursor: Option<WpCursorShapeDeviceV1>,
     modifiers: Modifiers,
     calc: Calc,
+    /// When "Copied" stops showing, while it shows.
+    notice_until: Option<Instant>,
     /// Copy and paste; None when the compositor has no data device manager.
     data_manager: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,
@@ -425,10 +444,14 @@ impl App {
         source.set_selection(device, serial);
         // Replacing the old source destroys it.
         self.copied = Some((source, self.calc.copy_text()));
+        self.notice_until = Some(Instant::now() + NOTICE_TIME);
+        self.dirty = true;
     }
 
     /// Ctrl+V: starts reading the selection; `event_loop` finishes it.
     fn paste(&mut self) {
+        // Asking to paste ends "Copied", whether or not anything arrives.
+        self.end_notice();
         let Some(offer) = self
             .data_device
             .as_ref()
@@ -485,7 +508,15 @@ impl App {
 
     fn press(&mut self, key: Key) {
         self.calc.press(key);
+        // Carrying on hides "Copied" at once.
+        self.end_notice();
         self.dirty = true;
+    }
+
+    fn end_notice(&mut self) {
+        if self.notice_until.take().is_some() {
+            self.dirty = true;
+        }
     }
 
     /// Reads the theme again. A theme that can't be read keeps the colors
@@ -587,6 +618,7 @@ impl App {
             expression: &expression,
             display: &display,
             pressed,
+            notice: self.notice_until.map(|_| "Copied"),
         };
         let mut canvas = Canvas::new(canvas, pw as usize, ph as usize);
         let logical = (self.size.0 as f32, self.size.1 as f32);
@@ -936,6 +968,8 @@ impl PointerHandler for App {
                 PointerEventKind::Press {
                     button: BTN_LEFT, ..
                 } => {
+                    // Any click ends "Copied", on a key or not.
+                    self.end_notice();
                     self.mouse_down = self.button_under_pointer();
                 }
                 PointerEventKind::Release {
