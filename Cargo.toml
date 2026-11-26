@@ -26,3 +26,10 @@ strip = true
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# The screen reader library (a11y/) is packaged from this profile: it's loaded
+# only while Orca runs, so size matters more than speed there. "z" takes it
+# from 2.7 to 1.9 MB. The binary keeps `release`.
+[profile.release-a11y]
+inherits = "release"
+opt-level = "z"

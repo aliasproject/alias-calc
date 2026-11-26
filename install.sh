@@ -102,9 +102,12 @@ install_() {
         }
         say "Building the release binary and the screen reader library..."
         # The paths cargo reports for what it built, wherever its target
-        # dir puts them. (Kept, then read: a failed build stops here.)
-        built=$(cd "$here" && cargo build --release --locked --workspace \
-            --message-format=json-render-diagnostics)
+        # dir puts them. (Kept, then read: a failed build stops here.) The
+        # library has its own size-first profile (release-a11y, Cargo.toml).
+        built=$(cd "$here" && cargo build --release --locked -p alias-calc \
+            --message-format=json-render-diagnostics &&
+            cargo build --profile release-a11y --locked -p alias-calc-a11y \
+                --message-format=json-render-diagnostics)
         bin=$(printf '%s\n' "$built" | sed -n 's/.*"executable":"\([^"]*alias-calc\)".*/\1/p' | tail -n 1)
         lib=$(printf '%s\n' "$built" | grep -o "\"[^\"]*/$library\"" | tr -d '"' | tail -n 1)
         [ -n "$bin" ] || { say "install.sh: cargo didn't report a built alias-calc" >&2; exit 1; }
