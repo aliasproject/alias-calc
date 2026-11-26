@@ -68,6 +68,11 @@ jobs:
       # The renderer's frame budget: only meaningful optimised, so it's
       # ignored in the debug test run.
       - name: Performance budgets
+        # The 1 ms frame budget is for an aliasOS desktop. Hosted runners are
+        # about twice as slow (1.06 ms where the desktop takes 0.53 ms), so
+        # here it only guards against a renderer that got much slower.
+        env:
+          ALIAS_CALC_FRAME_BUDGET_US: "3000"
         run: cargo test --release --locked -- --ignored budget_ --test-threads=1 --nocapture
       - name: Scripts parse
         run: |

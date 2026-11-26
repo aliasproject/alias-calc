@@ -1055,6 +1055,16 @@ mod tests {
             .min()
             .unwrap();
         println!("full frame at 640x960: {per_frame:?} (best of {batches} batches of {runs})");
-        assert!(per_frame.as_micros() < 1000, "{per_frame:?}");
+        // 1 ms is the budget on an aliasOS desktop. A slower machine (CI's
+        // shared runners are about twice as slow) sets its own limit, which
+        // still catches a renderer that has got several times slower.
+        let limit_us = std::env::var("ALIAS_CALC_FRAME_BUDGET_US")
+            .ok()
+            .and_then(|v| v.parse::<u128>().ok())
+            .unwrap_or(1000);
+        assert!(
+            per_frame.as_micros() < limit_us,
+            "{per_frame:?} (limit {limit_us} µs)"
+        );
     }
 }
