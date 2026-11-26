@@ -961,10 +961,12 @@ mod tests {
                 "{name}"
             );
         }
-        let built_in = Palette::default();
-        assert_eq!(built_in.background, hex("#131a1f"));
-        assert_eq!(built_in.accent, hex("#7f96a1"));
-        assert_eq!(built_in.muted, hex("#131a1f").mix(hex("#d8dde0"), 0.65));
+        // The built-in palette is exactly the first row above, so everything
+        // checked there holds for it.
+        assert_eq!(
+            Palette::default(),
+            Palette::new(hex("#131a1f"), hex("#d8dde0"), hex("#7f96a1"))
+        );
     }
 
     #[test]
