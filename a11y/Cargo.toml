@@ -2,7 +2,7 @@
 name = "alias-calc-a11y"
 version = "0.1.0"
 edition = "2024"
-license = "LicenseRef-Proprietary"
+license = "MIT"
 description = "Alias Calc's screen reader bridge, loaded only when one is running"
 publish = false
 

@@ -1,8 +1,8 @@
 [package]
 name = "alias-calc"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
-license = "LicenseRef-Proprietary"
+license = "MIT"
 description = "A tiny, instant calculator for aliasOS"
 publish = false
 
