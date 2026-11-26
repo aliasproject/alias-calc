@@ -1,4 +1,4 @@
-# Runs on GitHub's hosted runners, as Gannet's CI does: the repo is public,
+# Runs on GitHub's hosted runners, as Gannet's CI does: the repo is open source,
 # and the org's self-hosted home runners take private repos only (a public
 # repo's pull requests would otherwise run outside code on them). The job
 # runs in an Ubuntu container where it is root and can apt-install what it
@@ -43,7 +43,10 @@ jobs:
           apt-get install -y -qq --no-install-recommends \
             git ca-certificates curl build-essential pkg-config \
             libxkbcommon-dev python3 >/dev/null
+      # Fork code runs after this, so the token isn't left in git's config.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -65,7 +68,7 @@ jobs:
       # The renderer's frame budget: only meaningful optimised, so it's
       # ignored in the debug test run.
       - name: Performance budgets
-        run: cargo test --release --locked -- --ignored budget_ --test-threads=1
+        run: cargo test --release --locked -- --ignored budget_ --test-threads=1 --nocapture
       - name: Scripts parse
         run: |
           python3 -m py_compile bench/calcbench.py
