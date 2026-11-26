@@ -569,6 +569,17 @@ pub fn move_focus(from: Option<(usize, usize)>, how: Move) -> (usize, usize) {
     }
 }
 
+/// Every key's rectangle (x, y, width, height) in logical pixels, for the
+/// screen reader.
+pub fn key_rects(
+    fonts: &Fonts,
+    (width, height): (f32, f32),
+    text_scale: f32,
+) -> [[(f32, f32, f32, f32); 4]; 5] {
+    let layout = Layout::new(fonts, width, height, text_scale);
+    std::array::from_fn(|row| std::array::from_fn(|col| layout.key_rect(row, col)))
+}
+
 /// The key at logical position (x, y), as (row, column), in a window of
 /// `width` by `height` logical pixels drawn at `scale`. It tests the same
 /// pixel-snapped rectangles that are drawn, so a click on a key's edge pixel

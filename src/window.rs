@@ -54,6 +54,7 @@ use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
 
+use crate::a11y::{self, Access};
 use crate::clipboard::{self, Paste, Progress};
 use crate::engine::{Calc, Key};
 use crate::input;
@@ -65,7 +66,7 @@ use crate::ui::{self, Palette, View};
 
 /// What people see in the launcher and the title bar. "Alias Calc" is the
 /// product name; the window says what it does.
-const TITLE: &str = "Calculator";
+pub const TITLE: &str = "Calculator";
 const APP_ID: &str = "com.aliasproject.calc";
 
 /// Logical size when the compositor leaves it to us (a floating window).
@@ -174,6 +175,9 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         text_scale,
         focus: None,
         focus_visible: false,
+        access: None,
+        a11y_checked: false,
+        keyboard_focused: false,
         scaling,
         configured: false,
         drawn: false,
@@ -238,6 +242,12 @@ fn event_loop(
             Err(err) => return Err(err.into()),
         };
 
+        // Once the first frame is on its way: start the screen reader
+        // bridge if one is running, so startup never waits on it.
+        if app.drawn && !app.a11y_checked {
+            app.start_a11y();
+        }
+
         // Events already queued mean there's nothing to wait for.
         let Some(guard) = queue.prepare_read() else {
             continue;
@@ -247,6 +257,8 @@ fn event_loop(
         // Out of `app` while polled, so its fd can be borrowed alongside.
         let mut paste = app.paste.take();
         let paste_fd = paste.as_ref().map(|p| p.fd());
+        let mut access = app.access.take();
+        let access_fd = access.as_ref().map(|a| a.fd());
         let flags = if unsent {
             PollFlags::IN | PollFlags::OUT
         } else {
@@ -276,14 +288,27 @@ fn event_loop(
             paste_fd
                 .as_ref()
                 .map_or_else(idle, |f| PollFd::new(f, PollFlags::IN)),
+            access_fd
+                .as_ref()
+                .map_or_else(idle, |f| PollFd::new(f, PollFlags::IN)),
         ];
         let polled = poll(&mut fds, timeout.as_ref());
         let wayland_revents = fds[0].revents();
         let wayland_in = wayland_revents.contains(PollFlags::IN);
         let theme_ready = theme_fd.is_some() && !fds[1].revents().is_empty();
         let paste_ready = paste_fd.is_some() && !fds[2].revents().is_empty();
+        let access_ready = access_fd.is_some() && !fds[3].revents().is_empty();
         drop(theme_fd);
         drop(paste_fd);
+        drop(access_fd);
+        let requests = match (&mut access, access_ready) {
+            (Some(access), true) => access.requests(),
+            _ => Vec::new(),
+        };
+        app.access = access;
+        for request in requests {
+            app.screen_reader_asked(request);
+        }
         // Before anything that can `continue`, so the paste is never lost.
         if paste_ready && let Some(mut reading) = paste.take() {
             paste = app.paste_progress(reading.read(), reading);
@@ -326,7 +351,8 @@ fn event_loop(
             return Err("lost the connection to the compositor".into());
         }
         if !wayland_in {
-            // Only writable, or only the theme: go round.
+            // Only writable, or only the theme, paste or screen reader: go
+            // round.
             drop(guard);
             continue;
         }
@@ -372,6 +398,13 @@ struct App {
     /// first Tab or arrow until the next click).
     focus: Option<(usize, usize)>,
     focus_visible: bool,
+    /// The screen reader bridge, only when one is running (crate::a11y).
+    access: Option<Access>,
+    /// Whether the check for a screen reader has run (after the first
+    /// frame).
+    a11y_checked: bool,
+    /// Whether the window has keyboard focus, for the screen reader.
+    keyboard_focused: bool,
     /// When "Copied" stops showing, while it shows.
     notice_until: Option<Instant>,
     /// Copy and paste; None when the compositor has no data device manager.
@@ -538,6 +571,57 @@ impl App {
         self.dirty = true;
     }
 
+    /// Starts the screen reader bridge if a screen reader is running.
+    fn start_a11y(&mut self) {
+        self.a11y_checked = true;
+        if a11y::screen_reader_running() {
+            self.access = Access::start();
+            if let Some(access) = &mut self.access {
+                access.window_focused(self.keyboard_focused);
+                trace::mark("screen reader bridge started");
+            }
+        }
+    }
+
+    fn screen_reader_asked(&mut self, request: a11y::Request) {
+        match request {
+            a11y::Request::Tree => {}
+            // A screen reader works by focus: its press keeps focus, and
+            // the ring, on the key, so its next move starts there.
+            a11y::Request::Press(cell) => {
+                self.focus = Some(cell);
+                self.focus_visible = true;
+                self.press(ui::action(cell));
+            }
+            a11y::Request::Focus(cell) => {
+                self.focus = Some(cell);
+                self.focus_visible = true;
+            }
+        }
+        // Each answer, even to a press that changed nothing, sends the tree.
+        self.update_a11y();
+        self.dirty = true;
+    }
+
+    /// Sends the screen reader what's on screen now.
+    fn update_a11y(&mut self) {
+        let Some(access) = &mut self.access else {
+            return;
+        };
+        let size = (self.size.0 as f32, self.size.1 as f32);
+        let expression = self.calc.expression();
+        let display = self.calc.display();
+        access.update(&a11y::State {
+            expression: &expression,
+            display: &display,
+            notice: self.notice_until.map(|_| "Copied"),
+            // The focus a screen reader hears is the one drawn.
+            focus: self.focus.filter(|_| self.focus_visible),
+            keys: ui::key_rects(&self.fonts, size, self.text_scale),
+            size,
+        });
+    }
+
     fn end_notice(&mut self) {
         if self.notice_until.take().is_some() {
             self.dirty = true;
@@ -685,6 +769,7 @@ impl App {
             .map_err(|err| format!("can't attach the buffer: {err}"))?;
         self.window.commit();
         self.drawn = true;
+        self.update_a11y();
         if trace::on() {
             trace::mark(&format!("frame committed ({pw}x{ph} px)"));
         }
@@ -848,6 +933,10 @@ impl KeyboardHandler for App {
         _: &[u32],
         _: &[Keysym],
     ) {
+        self.keyboard_focused = true;
+        if let Some(access) = &mut self.access {
+            access.window_focused(true);
+        }
     }
 
     fn leave(
@@ -858,6 +947,10 @@ impl KeyboardHandler for App {
         _: &wl_surface::WlSurface,
         _: u32,
     ) {
+        self.keyboard_focused = false;
+        if let Some(access) = &mut self.access {
+            access.window_focused(false);
+        }
         // Keys released elsewhere never send their release here.
         if self.key_down.take().is_some_and(|(_, cell)| cell.is_some()) {
             self.dirty = true;
@@ -1048,10 +1141,16 @@ impl PointerHandler for App {
                     self.mouse_down = self.button_under_pointer();
                     // A click moves focus to the key, but the ring is for
                     // keyboard users: it hides until the next Tab or arrow.
+                    // With a screen reader it stays, so what's heard as
+                    // focused (the drawn focus) stays on the key.
                     if let Some(cell) = self.mouse_down {
                         self.focus = Some(cell);
+                        if self.access.is_some() && !self.focus_visible {
+                            self.focus_visible = true;
+                            self.dirty = true;
+                        }
                     }
-                    if self.focus_visible {
+                    if self.focus_visible && self.access.is_none() {
                         self.focus_visible = false;
                         self.dirty = true;
                     }

@@ -13,6 +13,10 @@ rustix = { version = "1", default-features = false, features = ["std", "event", 
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["xkbcommon"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
+[workspace]
+# The screen reader bridge, a library loaded only when one is running.
+members = [".", "a11y"]
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
