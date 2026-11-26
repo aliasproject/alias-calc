@@ -1,9 +1,8 @@
-# Runs on the org's self-hosted home runners (shared with other
-# repositories: one VM, one Docker daemon). Their host has no Rust and no
-# sudo, so the job runs in a container where it is root and can
-# apt-install what it needs. The runner runs as uid 1001 and cleans the
-# workspace and its temp directory before the next job; it can't remove
-# what root left there, so the job ends by handing both back.
+# Runs on GitHub's hosted runners, as Gannet's CI does: the repo is open source,
+# and the org's self-hosted home runners take private repos only (a public
+# repo's pull requests would otherwise run outside code on them). The job
+# runs in an Ubuntu container where it is root and can apt-install what it
+# needs.
 #
 # No test opens a window.
 name: CI
@@ -19,7 +18,7 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# The job runs PR code as root on shared runners: its token reads only.
+# The job runs pull request code: its token reads only.
 permissions:
   contents: read
 
@@ -31,7 +30,7 @@ env:
 jobs:
   check:
     name: fmt, clippy, tests, release build
-    runs-on: [self-hosted, home]
+    runs-on: ubuntu-24.04
     container: ubuntu:24.04
     timeout-minutes: 30
     steps:
@@ -44,11 +43,10 @@ jobs:
           apt-get install -y -qq --no-install-recommends \
             git ca-certificates curl build-essential pkg-config \
             libxkbcommon-dev python3 >/dev/null
+      # Fork code runs after this, so the token isn't left in git's config.
       - uses: actions/checkout@v4
-      # A clean Rust each time: an earlier job's half-installed rustup in
-      # the shared $HOME breaks the install.
-      - name: Start from a clean home
-        run: rm -rf "$HOME/.cargo" "$HOME/.rustup"
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -70,7 +68,12 @@ jobs:
       # The renderer's frame budget: only meaningful optimised, so it's
       # ignored in the debug test run.
       - name: Performance budgets
-        run: cargo test --release --locked -- --ignored budget_ --test-threads=1
+        # The 1 ms frame budget is for an aliasOS desktop. Hosted runners are
+        # about twice as slow (1.06 ms where the desktop takes 0.53 ms), so
+        # here it only guards against a renderer that got much slower.
+        env:
+          ALIAS_CALC_FRAME_BUDGET_US: "3000"
+        run: cargo test --release --locked -- --ignored budget_ --test-threads=1 --nocapture
       - name: Scripts parse
         run: |
           python3 -m py_compile bench/calcbench.py
@@ -90,6 +93,3 @@ jobs:
           PREFIX=/usr DESTDIR="$stage" ./install.sh uninstall
           test "$(find "$stage" -type f | wc -l)" -eq 0
           rm -rf "$stage"
-      - name: Hand the workspace back to the runner user
-        if: always()
-        run: chown -R 1001:1001 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"

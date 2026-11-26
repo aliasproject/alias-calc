@@ -68,3 +68,7 @@ Hyprland pings every window every 1.5 s to check that it still responds (`xdg_wm
 [trace]   0.369 ms  configured
 [trace]   0.608 ms  frame committed (320x480 px)
 ```
+
+## Licence
+
+MIT (`LICENSE`). The JetBrains Mono subsets compiled into the binary are under the SIL Open Font License 1.1 (`fonts/OFL.txt`).
