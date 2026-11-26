@@ -266,12 +266,13 @@ fn readable(ink: Color, grounds: &[Color], min: f32) -> Color {
 }
 
 impl Default for Palette {
-    /// Used until the theme is read, and when it can't be.
+    /// Used until the theme is read, and when it can't be: the default
+    /// aliasOS theme (themes/aliasos/colors.toml in the aliasOS repo).
     fn default() -> Self {
         Palette::new(
-            Color::rgb(0x1a, 0x1b, 0x26),
-            Color::rgb(0xc0, 0xca, 0xf5),
-            Color::rgb(0x7a, 0xa2, 0xf7),
+            Color::rgb(0x13, 0x1a, 0x1f),
+            Color::rgb(0xd8, 0xdd, 0xe0),
+            Color::rgb(0x7f, 0x96, 0xa1),
         )
     }
 }
@@ -937,9 +938,10 @@ mod tests {
     #[test]
     fn aliasos_themes_meet_aa_and_keep_their_colours() {
         let hex = |h: &str| Color::from_hex(h).unwrap();
-        // The built-in palette and four themes from ~/.config/aliasos/themes.
+        // The built-in palette (the aliasOS default theme) and four themes
+        // from ~/.config/aliasos/themes.
         for (name, bg, fg, accent) in [
-            ("built-in", "#1a1b26", "#c0caf5", "#7aa2f7"),
+            ("aliasos (built-in)", "#131a1f", "#d8dde0", "#7f96a1"),
             ("tarnished", "#0b111a", "#c5ced6", "#5e92c6"),
             ("ember-night", "#081822", "#dce4e8", "#f0502a"),
             ("papercraft", "#1a1a1c", "#d8ccb8", "#d9692e"),
@@ -959,7 +961,12 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(Palette::default().muted, hex("#868dad"));
+        // The built-in palette is exactly the first row above, so everything
+        // checked there holds for it.
+        assert_eq!(
+            Palette::default(),
+            Palette::new(hex("#131a1f"), hex("#d8dde0"), hex("#7f96a1"))
+        );
     }
 
     #[test]
