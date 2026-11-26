@@ -34,7 +34,7 @@ Screen reader support is a separate library, `target/release/libalias_calc_a11y.
 ./install.sh uninstall
 ```
 
-It installs `bin/alias-calc`, the screen reader library in `lib/alias-calc/`, the desktop entry (`packaging/com.aliasproject.calc.desktop`, "Calculator" in the launcher) and the icons (`packaging/icons`). aliasOS packages it from the `alias-calc` PKGBUILD in aliasos-pkgs, which builds first and then runs `PREFIX=/usr DESTDIR="$pkgdir" BIN=target/release/alias-calc LIB=target/release/libalias_calc_a11y.so ./install.sh`: with `BIN` and `LIB` set, nothing is built. The icons are a placeholder until the logo is chosen (ALI-2104).
+It installs `bin/alias-calc`, the screen reader library in `lib/alias-calc/`, the desktop entry (`packaging/com.aliasproject.calc.desktop`, "Calculator" in the launcher) and the icons (`packaging/icons`). aliasOS packages it from the `alias-calc` PKGBUILD in aliasos-pkgs, which builds first and then runs `PREFIX=/usr DESTDIR="$pkgdir" BIN=target/release/alias-calc LIB=target/release/libalias_calc_a11y.so ./install.sh`: with `BIN` and `LIB` set, nothing is built.
 
 ## Benchmark
 
