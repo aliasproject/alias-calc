@@ -58,6 +58,7 @@ use crate::clipboard::{self, Paste, Progress};
 use crate::engine::{Calc, Key};
 use crate::input;
 use crate::render::{Canvas, Fonts};
+use crate::textsize;
 use crate::theme;
 use crate::trace;
 use crate::ui::{self, Palette, View};
@@ -69,7 +70,8 @@ const APP_ID: &str = "com.aliasproject.calc";
 
 /// Logical size when the compositor leaves it to us (a floating window).
 const DEFAULT_SIZE: (u32, u32) = (320, 480);
-const MIN_SIZE: (u32, u32) = (260, 380);
+/// 400 tall keeps every key at least 44 px (ui::MIN_KEY) at the smallest size.
+const MIN_SIZE: (u32, u32) = (260, 400);
 
 /// Key repeat when the compositor doesn't say (it always does on Hyprland).
 const DEFAULT_REPEAT: (Duration, Duration) =
@@ -80,6 +82,12 @@ const NOTICE_TIME: Duration = Duration::from_millis(1200);
 
 /// The left mouse button (linux/input-event-codes.h BTN_LEFT).
 const BTN_LEFT: u32 = 0x110;
+
+/// `size` grown by the text scale (never shrunk below it).
+fn scaled((w, h): (u32, u32), text_scale: f32) -> (u32, u32) {
+    let k = text_scale.max(1.0);
+    ((w as f32 * k).round() as u32, (h as f32 * k).round() as u32)
+}
 
 /// Fractional scales arrive as 120ths (`wp_fractional_scale_v1`).
 const SCALE_DENOMINATOR: u32 = 120;
@@ -115,10 +123,12 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         _ => Scaling::Integer(1),
     };
 
+    // Larger aliasOS text means a larger window, so the layout holds.
+    let text_scale = textsize::load();
     let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
     window.set_title(TITLE);
     window.set_app_id(APP_ID);
-    window.set_min_size(Some(MIN_SIZE));
+    window.set_min_size(Some(scaled(MIN_SIZE, text_scale)));
     // The first commit has no buffer: it asks the compositor for a
     // configure, and the first draw answers it.
     window.commit();
@@ -132,7 +142,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     let palette = theme::load().unwrap_or_default();
     trace::mark("theme read");
 
-    let (w, h) = DEFAULT_SIZE;
+    let (w, h) = scaled(DEFAULT_SIZE, text_scale);
     let pool = SlotPool::new((w * h * 4) as usize, &shm)?;
     let mut app = App {
         registry: RegistryState::new(&globals),
@@ -160,7 +170,10 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         buffer: None,
         fonts,
         palette,
-        size: DEFAULT_SIZE,
+        size: (w, h),
+        text_scale,
+        focus: None,
+        focus_visible: false,
         scaling,
         configured: false,
         drawn: false,
@@ -289,8 +302,14 @@ fn event_loop(
         }
         if theme_ready && let Some(watch) = &theme {
             match watch.changed() {
-                Ok(true) => app.reload_theme(),
-                Ok(false) => {}
+                Ok(changed) => {
+                    if changed.theme {
+                        app.reload_theme();
+                    }
+                    if changed.text {
+                        app.reload_text_size();
+                    }
+                }
                 // A broken watch would keep the fd readable and spin the
                 // loop: stop following the theme instead.
                 Err(err) => {
@@ -347,6 +366,12 @@ struct App {
     cursor: Option<WpCursorShapeDeviceV1>,
     modifiers: Modifiers,
     calc: Calc,
+    /// The aliasOS text size as a factor (crate::textsize).
+    text_scale: f32,
+    /// The key with keyboard focus, and whether its ring shows (from the
+    /// first Tab or arrow until the next click).
+    focus: Option<(usize, usize)>,
+    focus_visible: bool,
     /// When "Copied" stops showing, while it shows.
     notice_until: Option<Instant>,
     /// Copy and paste; None when the compositor has no data device manager.
@@ -519,6 +544,19 @@ impl App {
         }
     }
 
+    /// Follows a change to the aliasOS text size: new text sizes now, and a
+    /// new minimum window. The window keeps its size; the compositor or the
+    /// person resizes it.
+    fn reload_text_size(&mut self) {
+        let text_scale = textsize::load();
+        if text_scale != self.text_scale {
+            self.text_scale = text_scale;
+            self.window.set_min_size(Some(scaled(MIN_SIZE, text_scale)));
+            self.dirty = true;
+            trace::mark("text size changed");
+        }
+    }
+
     /// Reads the theme again. A theme that can't be read keeps the colors
     /// already showing rather than flashing the built-in ones.
     fn reload_theme(&mut self) {
@@ -554,6 +592,7 @@ impl App {
             &self.fonts,
             (w as f32, h as f32),
             scale,
+            self.text_scale,
             (x as f32, y as f32),
         )
     }
@@ -619,6 +658,8 @@ impl App {
             display: &display,
             pressed,
             notice: self.notice_until.map(|_| "Copied"),
+            focus: self.focus.filter(|_| self.focus_visible),
+            text_scale: self.text_scale,
         };
         let mut canvas = Canvas::new(canvas, pw as usize, ph as usize);
         let logical = (self.size.0 as f32, self.size.1 as f32);
@@ -857,8 +898,42 @@ impl KeyboardHandler for App {
         if m.ctrl || m.alt || m.logo {
             return;
         }
-        let Some(key) = input::key_for(event.keysym) else {
+        // Keyboard focus: Tab, Shift+Tab and the arrows move it (and show
+        // it); Space presses the focused key.
+        let movement = match event.keysym {
+            // Shift+Tab is ISO_Left_Tab on standard layouts, Tab with Shift
+            // held on others.
+            Keysym::Tab if m.shift => Some(ui::Move::Previous),
+            Keysym::Tab => Some(ui::Move::Next),
+            Keysym::ISO_Left_Tab => Some(ui::Move::Previous),
+            Keysym::Up => Some(ui::Move::Up),
+            Keysym::Down => Some(ui::Move::Down),
+            Keysym::Left => Some(ui::Move::Left),
+            Keysym::Right => Some(ui::Move::Right),
+            _ => None,
+        };
+        if let Some(how) = movement {
+            // The first press only shows where focus is (the last key
+            // clicked, else the first key); later presses move it.
+            self.focus = Some(match (self.focus_visible, self.focus) {
+                (true, from) => ui::move_focus(from, how),
+                (false, Some(cell)) => cell,
+                (false, None) => ui::move_focus(None, how),
+            });
+            self.focus_visible = true;
+            self.dirty = true;
             return;
+        }
+        let key = if event.keysym == Keysym::space {
+            match self.focus.filter(|_| self.focus_visible) {
+                Some(cell) => ui::action(cell),
+                None => return,
+            }
+        } else {
+            let Some(key) = input::key_for(event.keysym) else {
+                return;
+            };
+            key
         };
         self.key_down = Some((event.raw_code, ui::cell_of(key)));
         self.repeat = match self.repeat_rate {
@@ -971,6 +1046,15 @@ impl PointerHandler for App {
                     // Any click ends "Copied", on a key or not.
                     self.end_notice();
                     self.mouse_down = self.button_under_pointer();
+                    // A click moves focus to the key, but the ring is for
+                    // keyboard users: it hides until the next Tab or arrow.
+                    if let Some(cell) = self.mouse_down {
+                        self.focus = Some(cell);
+                    }
+                    if self.focus_visible {
+                        self.focus_visible = false;
+                        self.dirty = true;
+                    }
                 }
                 PointerEventKind::Release {
                     button: BTN_LEFT, ..

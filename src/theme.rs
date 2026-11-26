@@ -103,17 +103,28 @@ fn color_value(value: &str) -> Option<Color> {
 /// Watches for theme changes. Its fd goes in the event loop's poll set.
 pub struct Watch {
     fd: OwnedFd,
+    /// The watch on the aliasOS config folder, for the text size.
+    text_wd: Option<i32>,
+}
+
+/// What a batch of watch events changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Changed {
+    pub theme: bool,
+    /// The aliasOS text size (crate::textsize).
+    pub text: bool,
 }
 
 impl Watch {
     /// Starts watching every theme source's `current` directory that exists,
-    /// so a fallback to Omarchy still sees an aliasOS theme arrive. `None`
-    /// when there's none, or inotify isn't available.
+    /// so a fallback to Omarchy still sees an aliasOS theme arrive, and the
+    /// aliasOS config folder for the text size. `None` when there's nothing
+    /// to watch, or inotify isn't available.
     pub fn new() -> Option<Self> {
-        Self::on(&sources())
+        Self::on(&sources(), crate::textsize::dir())
     }
 
-    fn on(sources: &[PathBuf]) -> Option<Self> {
+    fn on(sources: &[PathBuf], text_dir: Option<PathBuf>) -> Option<Self> {
         let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK).ok()?;
         // A theme arrives as an entry named `theme` moved or created in
         // `current/` (a directory or a symlink, never written in place), so
@@ -124,30 +135,48 @@ impl Watch {
             .iter()
             .filter(|dir| inotify::add_watch(&fd, dir.as_path(), flags).is_ok())
             .count();
-        (watched > 0).then_some(Self { fd })
+        // shell.toml is rewritten in place or replaced with mv.
+        let text_wd = text_dir.and_then(|dir| {
+            inotify::add_watch(
+                &fd,
+                dir.as_path(),
+                WatchFlags::CLOSE_WRITE | WatchFlags::MOVED_TO,
+            )
+            .ok()
+        });
+        (watched > 0 || text_wd.is_some()).then_some(Self { fd, text_wd })
     }
 
     pub fn fd(&self) -> impl AsFd + '_ {
         self.fd.as_fd()
     }
 
-    /// Drains the pending events and says whether any touched the theme.
-    /// Call when the fd is readable. An error means the watch is broken (its
-    /// fd would stay readable and spin the loop), so stop using it.
-    pub fn changed(&self) -> Result<bool, Errno> {
+    /// Drains the pending events and says what they changed. Call when the
+    /// fd is readable. An error means the watch is broken (its fd would stay
+    /// readable and spin the loop), so stop using it.
+    pub fn changed(&self) -> Result<Changed, Errno> {
         let mut buf = [std::mem::MaybeUninit::uninit(); 4096];
         let mut reader = inotify::Reader::new(&self.fd, &mut buf);
-        let mut changed = false;
+        let mut changed = Changed::default();
         loop {
             match reader.next() {
                 Ok(event) => {
                     if event.events().contains(ReadFlags::QUEUE_OVERFLOW) {
-                        changed = true;
+                        changed = Changed {
+                            theme: true,
+                            text: true,
+                        };
                     }
-                    if let Some(name) = event.file_name()
-                        && is_theme_entry(OsStr::from_bytes(name.to_bytes()))
-                    {
-                        changed = true;
+                    let Some(name) = event.file_name() else {
+                        continue;
+                    };
+                    let name = OsStr::from_bytes(name.to_bytes());
+                    if Some(event.wd()) == self.text_wd {
+                        if name == crate::textsize::FILE {
+                            changed.text = true;
+                        }
+                    } else if is_theme_entry(name) {
+                        changed.theme = true;
                     }
                 }
                 Err(Errno::AGAIN) => return Ok(changed),
@@ -290,22 +319,56 @@ color4 = "#5482B4"
         let omarchy = tmp.0.join("omarchy/current");
         std::fs::create_dir_all(aliasos.join("next-theme")).unwrap();
         std::fs::create_dir_all(&omarchy).unwrap();
-        let watch = Watch::on(&[aliasos.clone(), omarchy.clone()]).unwrap();
-        assert_eq!(watch.changed(), Ok(false), "nothing yet");
+        let watch = Watch::on(&[aliasos.clone(), omarchy.clone()], None).unwrap();
+        assert_eq!(watch.changed().map(|c| c.theme), Ok(false), "nothing yet");
 
         std::fs::write(aliasos.join("theme.name"), "x").unwrap();
-        assert_eq!(watch.changed(), Ok(false), "other entries don't count");
+        assert_eq!(
+            watch.changed().map(|c| c.theme),
+            Ok(false),
+            "other entries don't count"
+        );
 
         std::fs::rename(aliasos.join("next-theme"), aliasos.join("theme")).unwrap();
-        assert_eq!(watch.changed(), Ok(true), "aliasOS's mv counts");
+        assert_eq!(
+            watch.changed().map(|c| c.theme),
+            Ok(true),
+            "aliasOS's mv counts"
+        );
 
         std::os::unix::fs::symlink(&aliasos, omarchy.join("theme")).unwrap();
-        assert_eq!(watch.changed(), Ok(true), "Omarchy's symlink counts");
+        assert_eq!(
+            watch.changed().map(|c| c.theme),
+            Ok(true),
+            "Omarchy's symlink counts"
+        );
+    }
+
+    #[test]
+    fn watch_sees_the_text_size_change() {
+        let tmp = TempDir::new("textwatch");
+        let config = tmp.0.join("aliasos");
+        std::fs::create_dir_all(&config).unwrap();
+        let watch = Watch::on(&[], Some(config.clone())).unwrap();
+        std::fs::write(config.join("other.toml"), "x").unwrap();
+        assert_eq!(
+            watch.changed(),
+            Ok(Changed::default()),
+            "other files don't count"
+        );
+        std::fs::write(config.join("shell.toml"), "[font]\nbase-size = 18\n").unwrap();
+        assert_eq!(
+            watch.changed(),
+            Ok(Changed {
+                theme: false,
+                text: true
+            })
+        );
     }
 
     #[test]
     fn no_watch_without_a_source() {
         let tmp = TempDir::new("nowatch");
-        assert!(Watch::on(&[tmp.0.join("missing")]).is_none());
+        assert!(Watch::on(&[tmp.0.join("missing")], None).is_none());
     }
 }

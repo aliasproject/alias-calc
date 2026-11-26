@@ -7,6 +7,7 @@ mod clipboard;
 mod engine;
 mod input;
 mod render;
+mod textsize;
 mod theme;
 mod trace;
 mod ui;
