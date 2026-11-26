@@ -69,10 +69,11 @@ jobs:
       # ignored in the debug test run.
       - name: Performance budgets
         run: cargo test --release --locked -- --ignored budget_ --test-threads=1
-      - name: Benchmark scripts parse
+      - name: Scripts parse
         run: |
           python3 -m py_compile bench/calcbench.py
           bash -n bench/run
+          sh -n install.sh
       - name: Hand the workspace back to the runner user
         if: always()
         run: chown -R 1001:1001 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"

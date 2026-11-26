@@ -131,16 +131,26 @@ unsafe extern "C" {
     fn dlerror() -> *const c_char;
 }
 
-/// Where the library may be: beside the binary (a build tree, or a package
-/// that keeps them together), then where the package installs it.
+/// Where the library may be, in order: beside the binary (a build tree),
+/// in `lib/alias-calc` beside the binary's `bin` (install.sh: `/usr` for the
+/// package, `~/.local` for a user install), then the package's path.
 fn library_paths() -> Vec<PathBuf> {
+    let exe = std::env::current_exe().ok();
+    candidates(exe.as_deref())
+}
+
+fn candidates(exe: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
+    if let Some(dir) = exe.and_then(|e| e.parent()) {
         paths.push(dir.join(LIBRARY));
+        if let Some(prefix) = dir.parent() {
+            paths.push(prefix.join("lib/alias-calc").join(LIBRARY));
+        }
     }
-    paths.push(PathBuf::from("/usr/lib/alias-calc").join(LIBRARY));
+    let package = PathBuf::from("/usr/lib/alias-calc").join(LIBRARY);
+    if !paths.contains(&package) {
+        paths.push(package);
+    }
     paths
 }
 
@@ -472,7 +482,19 @@ mod tests {
     }
 
     #[test]
-    fn looks_beside_the_binary_first() {
+    fn looks_beside_the_binary_then_under_its_prefix() {
+        let home = candidates(Some(std::path::Path::new("/home/m/.local/bin/alias-calc")));
+        assert_eq!(
+            home,
+            [
+                PathBuf::from("/home/m/.local/bin").join(LIBRARY),
+                PathBuf::from("/home/m/.local/lib/alias-calc").join(LIBRARY),
+                PathBuf::from("/usr/lib/alias-calc").join(LIBRARY),
+            ]
+        );
+        // The package's own path isn't listed twice.
+        let package = candidates(Some(std::path::Path::new("/usr/bin/alias-calc")));
+        assert_eq!(package.len(), 2);
         let paths = library_paths();
         assert_eq!(
             paths.last().unwrap(),

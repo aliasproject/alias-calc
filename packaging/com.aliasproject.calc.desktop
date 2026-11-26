@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Calculator
+GenericName=Calculator
+Comment=A tiny, instant calculator
+Exec=alias-calc
+Icon=com.aliasproject.calc
+Terminal=false
+Categories=Utility;Calculator;
+Keywords=calc;math;arithmetic;Alias Calc;
+StartupNotify=true
+StartupWMClass=com.aliasproject.calc

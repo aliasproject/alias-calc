@@ -27,6 +27,15 @@ The binary is `target/release/alias-calc`. The aim is to link nothing beyond lib
 
 Screen reader support is a separate library, `target/release/libalias_calc_a11y.so` (the `a11y/` crate, with AccessKit). The calculator loads it only when Orca is running, from beside its binary or from `/usr/lib/alias-calc/`, so without a screen reader it costs nothing. A package installs it to `/usr/lib/alias-calc/`.
 
+## Install
+
+```sh
+./install.sh              # build, then install into ~/.local
+./install.sh uninstall
+```
+
+It installs `bin/alias-calc`, the screen reader library in `lib/alias-calc/`, the desktop entry (`packaging/com.aliasproject.calc.desktop`, "Calculator" in the launcher) and the icons (`packaging/icons`). aliasOS packages it with `PREFIX=/usr DESTDIR=… ./install.sh` from the `alias-calc` PKGBUILD in aliasos-pkgs. The icons are a placeholder until the logo is chosen (ALI-2104).
+
 ## Benchmark
 
 Alias Calc must beat omacalc and GNOME Calculator on startup, memory and idle wakeups. In a Hyprland session, run:
