@@ -79,7 +79,8 @@ uninstall() {
         "$icondir/24x24/apps/$app.svg"
     rmdir "$libdir" 2>/dev/null || true
     # And any temporary file an install that was killed left.
-    for left in "$bindir"/.alias-calc.tmp.?????? "$libdir"/.alias-calc.tmp.??????; do
+    for left in "$bindir"/.alias-calc.tmp.?????? "$libdir"/.alias-calc.tmp.?????? \
+        "$appdir"/.alias-calc.tmp.?????? "$icondir"/*/apps/.alias-calc.tmp.??????; do
         if [ -f "$left" ]; then rm -f "$left"; fi
     done
     refresh
@@ -89,6 +90,11 @@ uninstall() {
 install_() {
     bin=${BIN:-}
     lib=${LIB:-}
+    # Both or neither: a build would replace a LIB given on its own.
+    if [ -n "$lib" ] && [ -z "$bin" ]; then
+        say "install.sh: set BIN with LIB (or neither, to build both)" >&2
+        exit 1
+    fi
     if [ -z "$bin" ]; then
         command -v cargo >/dev/null 2>&1 || {
             say "install.sh: cargo is needed to build (or set BIN and LIB to built files)" >&2
@@ -110,18 +116,17 @@ install_() {
     put "$lib" "$libdir/$library" 755
 
     # The full path (quoted, for a PREFIX with spaces), so launchers find it
-    # whether or not PREFIX/bin is on their PATH.
-    mkdir -p "$appdir"
+    # whether or not PREFIX/bin is on their PATH. Written beside the source
+    # first, then put in place like the rest.
+    entry=$(mktemp)
     sed "s|^Exec=alias-calc\$|Exec=\"$prefix/bin/alias-calc\"|" \
-        "$here/packaging/$app.desktop" >"$appdir/$app.desktop"
-    chmod 644 "$appdir/$app.desktop"
+        "$here/packaging/$app.desktop" >"$entry"
+    put "$entry" "$appdir/$app.desktop" 644
+    rm -f "$entry"
 
     # The mark at any size, and the pixel-grid files where it's drawn small.
     for target in scalable:$app.svg 16x16:$app-16.svg 24x24:$app-24.svg; do
-        dir=${target%%:*}
-        mkdir -p "$icondir/$dir/apps"
-        cp "$here/packaging/icons/${target#*:}" "$icondir/$dir/apps/$app.svg"
-        chmod 644 "$icondir/$dir/apps/$app.svg"
+        put "$here/packaging/icons/${target#*:}" "$icondir/${target%%:*}/apps/$app.svg" 644
     done
 
     refresh
@@ -129,6 +134,7 @@ install_() {
     say "  $bindir/alias-calc"
     say "  $libdir/$library (screen readers)"
     say "  $appdir/$app.desktop (\"Calculator\" in the launcher)"
+    say "  $icondir/{scalable,16x16,24x24}/apps/$app.svg"
 }
 
 case "${1:-install}" in

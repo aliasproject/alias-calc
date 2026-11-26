@@ -74,6 +74,20 @@ jobs:
           python3 -m py_compile bench/calcbench.py
           bash -n bench/run
           sh -n install.sh
+      # A staged install and uninstall of the release build, as the
+      # PKGBUILD does it, and the desktop entry checked.
+      - name: Install and uninstall
+        run: |
+          apt-get install -y -qq --no-install-recommends desktop-file-utils >/dev/null
+          stage=$(mktemp -d)
+          PREFIX=/usr DESTDIR="$stage" BIN=target/release/alias-calc \
+            LIB=target/release/libalias_calc_a11y.so ./install.sh
+          desktop-file-validate packaging/com.aliasproject.calc.desktop
+          test "$(find "$stage" -type f | wc -l)" -eq 6
+          grep -qx 'Exec="/usr/bin/alias-calc"' "$stage/usr/share/applications/com.aliasproject.calc.desktop"
+          PREFIX=/usr DESTDIR="$stage" ./install.sh uninstall
+          test "$(find "$stage" -type f | wc -l)" -eq 0
+          rm -rf "$stage"
       - name: Hand the workspace back to the runner user
         if: always()
         run: chown -R 1001:1001 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"

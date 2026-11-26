@@ -7,6 +7,6 @@ Exec=alias-calc
 Icon=com.aliasproject.calc
 Terminal=false
 Categories=Utility;Calculator;
-Keywords=calc;math;arithmetic;Alias Calc;
+Keywords=alias-calc;calc;math;arithmetic;Alias Calc;
 StartupNotify=true
 StartupWMClass=com.aliasproject.calc
