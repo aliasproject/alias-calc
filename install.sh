@@ -118,7 +118,10 @@ install_() {
     # The full path (quoted, for a PREFIX with spaces), so launchers find it
     # whether or not PREFIX/bin is on their PATH. Written beside the source
     # first, then put in place like the rest.
-    entry=$(mktemp)
+    # (Named like put()'s temporary files, so an interrupted install leaves
+    # nothing that uninstall won't remove.)
+    mkdir -p "$appdir"
+    entry=$(mktemp "$appdir/.alias-calc.tmp.XXXXXX")
     sed "s|^Exec=alias-calc\$|Exec=\"$prefix/bin/alias-calc\"|" \
         "$here/packaging/$app.desktop" >"$entry"
     put "$entry" "$appdir/$app.desktop" 644
