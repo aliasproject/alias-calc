@@ -97,16 +97,14 @@ pub struct Palette {
     pub key_pressed: Color,
     /// The label on the accent-filled `=` key.
     pub on_accent: Color,
-    /// The 1 px outline every key has, 3:1 against the background (WCAG
-    /// 1.4.11: a control's boundary). The = key's accent fill usually is its
-    /// own boundary; `equals_border` is set only when it isn't.
-    pub border: Color,
-    pub equals_border: Option<Color>,
     /// The keyboard focus ring: 3:1 against the background it's drawn on.
     pub focus: Color,
 }
 
-/// WCAG 2.2 AA for non-text: control boundaries and focus indicators.
+/// WCAG 2.2 AA for non-text (1.4.11): the focus ring, which uses the digit
+/// colour and so already has 4.5:1. Keys need no outline: each is
+/// identified by its label, not its boundary.
+#[cfg(test)]
 const NON_TEXT_CONTRAST: f32 = 3.0;
 
 /// WCAG 2.2 AA for text: 4.5:1. Large text (24 px and up) only needs 3:1,
@@ -179,13 +177,6 @@ impl Palette {
             labels.pass(background, key, key_pressed),
             "key labels under 4.5:1"
         );
-        // Key outlines: the background moved towards the text, lifted to
-        // 3:1 (WCAG 1.4.11).
-        let border = readable(
-            background.mix(foreground, 0.35),
-            &[background],
-            NON_TEXT_CONTRAST,
-        );
         Self {
             background,
             foreground: labels.foreground,
@@ -198,12 +189,6 @@ impl Palette {
             key,
             key_pressed,
             on_accent,
-            border,
-            // Either of the = key's fills under 3:1 gets the outline.
-            equals_border: [accent, accent_pressed]
-                .iter()
-                .any(|&f| contrast(f, background) < NON_TEXT_CONTRAST)
-                .then_some(border),
             // The digits' colour already has 4.5:1 on the background.
             focus: labels.foreground,
         }
@@ -504,13 +489,7 @@ pub fn draw(
                 }
             };
             let (px, py, pw, ph) = layout.key_pixels(row, col, scale);
-            // The outline, then the fill inside it: at least one whole pixel.
-            let border = match role(label) {
-                Role::Equals => palette.equals_border,
-                _ => Some(palette.border),
-            };
-            let outline = border.map(|edge| (s(1.0).round().max(1.0), edge));
-            canvas.outlined_rect((px, py, pw, ph), s(RADIUS), fill, outline);
+            canvas.rounded_rect(px, py, pw, ph, s(RADIUS), fill);
             if view.focus == Some((row, col)) {
                 focus_ring(canvas, (px, py, pw, ph), scale, palette.focus);
             }
@@ -839,8 +818,8 @@ mod tests {
         }
         check("= label", p.on_accent, p.accent);
         check("= label held", p.on_accent, p.accent_pressed);
-        // Non-text (WCAG 1.4.11): key outlines and the focus ring, 3:1 on
-        // the background they meet.
+        // Non-text (WCAG 1.4.11, 2.4.7): the focus ring, 3:1 on the
+        // background it's drawn on.
         let edge = |what: &str, c: Color| {
             let r = contrast(c, p.background);
             assert!(
@@ -848,13 +827,7 @@ mod tests {
                 "{theme}: {what} is {r:.2}:1, needs 3:1"
             );
         };
-        edge("key outline", p.border);
         edge("focus ring", p.focus);
-        edge("= key boundary", p.equals_border.unwrap_or(p.accent));
-        edge(
-            "= key boundary held",
-            p.equals_border.unwrap_or(p.accent_pressed),
-        );
     }
 
     #[test]
@@ -916,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_have_an_outline_and_focus_draws_a_ring() {
+    fn focus_draws_a_ring_in_the_gap() {
         let mut fonts = Fonts::load();
         let palette = Palette::default();
         let (w, h) = (320usize, 480usize);
@@ -947,10 +920,9 @@ mod tests {
         let layout = Layout::new(&fonts, 320.0, 480.0, 1.0);
         let (kx, ky, _, kh) = layout.key_pixels(2, 1, 1.0);
         let plain = draw_with(&mut fonts, None);
-        // The key's left edge, half way down, is outline; one in, fill.
+        // The key is fill to its edge: no outline.
         let mid = (ky + kh / 2.0) as usize;
-        assert_eq!(at(&plain, kx as usize, mid), palette.border);
-        assert_eq!(at(&plain, kx as usize + 2, mid), palette.key);
+        assert_eq!(at(&plain, kx as usize, mid), palette.key);
         // Focus: the ring sits in the gap, 2 px out from the key, 2 px wide.
         let focused = draw_with(&mut fonts, Some((2, 1)));
         let ring_x = kx as usize - 3;

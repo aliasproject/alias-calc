@@ -56,7 +56,7 @@ impl Color {
         0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b)
     }
 
-    pub(crate) const fn pixel(self) -> [u8; 4] {
+    const fn pixel(self) -> [u8; 4] {
         [self.b, self.g, self.r, 0xff]
     }
 }
@@ -98,25 +98,10 @@ impl<'a> Canvas<'a> {
     /// Fills a rectangle with corners of radius `r`, anti-aliased. All
     /// values are in pixels and may be fractional.
     pub fn rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, color: Color) {
-        self.outlined_rect((x, y, w, h), r, color, None);
-    }
-
-    /// A rounded rectangle filled with `fill`, with an `edge` outline of
-    /// `width` pixels inside its bounds when given, in one pass: every pixel
-    /// is written once, so an outline costs no second fill.
-    pub fn outlined_rect(
-        &mut self,
-        (x, y, w, h): (f32, f32, f32, f32),
-        r: f32,
-        fill: Color,
-        outline: Option<(f32, Color)>,
-    ) {
         if w <= 0.0 || h <= 0.0 {
             return;
         }
-        let (b, edge) = outline.unwrap_or((0.0, fill));
-        let fill_px = fill.pixel();
-        let edge_px = edge.pixel();
+        let pixel = color.pixel();
         let hw = w / 2.0;
         let hh = h / 2.0;
         let r = r.clamp(0.0, hw.min(hh));
@@ -131,13 +116,13 @@ impl<'a> Canvas<'a> {
         for py in y0..y1 {
             let qy = ((py as f32 + 0.5) - cy).abs();
             let row = &mut self.px[py * self.width..(py + 1) * self.width];
-            // Rows clear of the corners and of the top and bottom edge (and
-            // outline) are solid fill except near their two ends.
-            let solid_row = qy + 0.5 <= hh - r.max(b);
+            // Rows clear of the corners and the top and bottom edges are
+            // solid except for their two end pixels.
+            let solid_row = qy + 0.5 <= hh - r && qy + 0.5 <= hh;
             for (px, dst) in row.iter_mut().enumerate().take(x1).skip(x0) {
                 let qx = ((px as f32 + 0.5) - cx).abs();
-                if solid_row && qx + 0.5 <= hw - b {
-                    *dst = fill_px;
+                if solid_row && qx + 0.5 <= hw {
+                    *dst = pixel;
                     continue;
                 }
                 // Signed distance from the pixel center to the shape.
@@ -147,19 +132,6 @@ impl<'a> Canvas<'a> {
                 let inside = dx.max(dy).min(0.0);
                 let distance = outside + inside - r;
                 let coverage = (0.5 - distance).clamp(0.0, 1.0);
-                if coverage <= 0.0 {
-                    continue;
-                }
-                // How far in past the outline: 1 is all fill, 0 all edge.
-                // Only the pixel on the outline's inner edge needs a mix.
-                let inner = (0.5 - (distance + b)).clamp(0.0, 1.0);
-                let pixel = if b <= 0.0 || inner >= 1.0 {
-                    fill_px
-                } else if inner <= 0.0 {
-                    edge_px
-                } else {
-                    edge.mix(fill, inner).pixel()
-                };
                 blend(dst, pixel, (coverage * 255.0).round() as u32);
             }
         }
