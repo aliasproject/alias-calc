@@ -75,8 +75,9 @@ put() {
 
 uninstall() {
     rm -f "$bindir/alias-calc" "$libdir/$library" "$appdir/$app.desktop" \
-        "$icondir/scalable/apps/$app.svg" "$icondir/16x16/apps/$app.svg" \
-        "$icondir/24x24/apps/$app.svg"
+        "$icondir/scalable/apps/$app.svg" "$icondir/16x16/apps/$app.png" \
+        "$icondir/24x24/apps/$app.png" \
+        "$icondir/16x16/apps/$app.svg" "$icondir/24x24/apps/$app.svg"   # 0.1.0's
     rmdir "$libdir" 2>/dev/null || true
     # And any temporary file an install that was killed left.
     for left in "$bindir"/.alias-calc.tmp.?????? "$libdir"/.alias-calc.tmp.?????? \
@@ -131,8 +132,13 @@ install_() {
     rm -f "$entry"
 
     # The mark at any size, and the pixel-grid files where it's drawn small.
-    for target in scalable:$app.svg 16x16:$app-16.svg 24x24:$app-24.svg; do
-        put "$here/packaging/icons/${target#*:}" "$icondir/${target%%:*}/apps/$app.svg" 644
+    # Those two are PNGs: launchers that index icons by name alone (aliasOS's
+    # shell keeps the first SVG it finds) would otherwise stretch the 16 px
+    # file to fill a 48 px tile. An install over 0.1.0 drops its SVGs.
+    put "$here/packaging/icons/$app.svg" "$icondir/scalable/apps/$app.svg" 644
+    for size in 16 24; do
+        put "$here/packaging/icons/$app-$size.png" "$icondir/${size}x$size/apps/$app.png" 644
+        rm -f "$icondir/${size}x$size/apps/$app.svg"
     done
 
     refresh
@@ -140,7 +146,7 @@ install_() {
     say "  $bindir/alias-calc"
     say "  $libdir/$library (screen readers)"
     say "  $appdir/$app.desktop (\"Calculator\" in the launcher)"
-    say "  $icondir/{scalable,16x16,24x24}/apps/$app.svg"
+    say "  $icondir/scalable/apps/$app.svg, {16x16,24x24}/apps/$app.png"
 }
 
 case "${1:-install}" in
