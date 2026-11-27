@@ -236,8 +236,9 @@ def main():
     except (TimeoutError, socket.timeout):
         sys.exit(f"calcbench: {args.name}: no window within {MAP_TIMEOUT:.0f} s")
     except subprocess.CalledProcessError as err:
-        sys.exit(f"calcbench: {args.name}: couldn't drop the page cache ({' '.join(err.cmd)}"
-                 f" exited {err.returncode}); --cold needs sudo, asked for first by bench/run")
+        why = "; --cold needs sudo, asked for first by bench/run" if err.cmd[0] == "sudo" else ""
+        sys.exit(f"calcbench: {args.name}: couldn't drop the caches ({' '.join(err.cmd)}"
+                 f" exited {err.returncode}){why}")
     except (OSError, RuntimeError) as err:
         sys.exit(f"calcbench: {args.name}: {err}")
 

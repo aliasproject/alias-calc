@@ -47,6 +47,8 @@ bench/run --bin /usr/bin/alias-calc          # the installed package, not this c
 bench/run --cold                             # drop the page cache before each launch (sudo)
 ```
 
+`--cold` writes 3 to `/proc/sys/vm/drop_caches`, which empties the page, dentry and inode caches. A library another running app has mapped stays in memory, so a cold start is as cold as the machine allows, not a first boot.
+
 For each app it times exec until Hyprland reports the window open, reads PSS, RSS and threads 2 s later, and counts wakeups over the next 5 idle seconds. It prints the medians as one table. The windows open on the current workspace, so leave the machine alone while it runs. omacalc builds from <https://github.com/omacom/omacalc> with `bin/build`.
 
 Baselines (2026-11-25, RTX 4090, 4K at scale 1, median of 10):
