@@ -27,6 +27,7 @@ import time
 SETTLE = 2.0  # seconds after map before reading memory
 IDLE = 5.0  # seconds of idle to count wakeups over
 MAP_TIMEOUT = 10.0
+COLD_MAP_TIMEOUT = 30.0  # a start that reads everything from disk
 
 
 def event_socket():
@@ -203,7 +204,8 @@ def table():
         cells = [row[k] / 1024 if k.endswith("_kb") else row[k] for k, _ in cols]
         print(f"{row['name']:18}" + "".join(f"{v:>11.1f}" for v in cells))
     if rows:
-        print(f"median of {rows[0]['runs']} runs each")
+        cold = ", from a cold page cache" if any(r.get("cold") for r in rows) else ""
+        print(f"median of {rows[0]['runs']} runs each{cold}")
 
 
 def main():
@@ -221,6 +223,9 @@ def main():
     args = parser.parse_args(argv[:split])
     cmd = argv[split + 1:]
     path = event_socket()
+    global MAP_TIMEOUT
+    if args.cold:
+        MAP_TIMEOUT = COLD_MAP_TIMEOUT
 
     try:
         results = []
@@ -230,12 +235,15 @@ def main():
             results.append(run_once(cmd, args.wclass.lower(), path))
     except (TimeoutError, socket.timeout):
         sys.exit(f"calcbench: {args.name}: no window within {MAP_TIMEOUT:.0f} s")
+    except subprocess.CalledProcessError as err:
+        sys.exit(f"calcbench: {args.name}: couldn't drop the page cache ({' '.join(err.cmd)}"
+                 f" exited {err.returncode}); --cold needs sudo, asked for first by bench/run")
     except (OSError, RuntimeError) as err:
         sys.exit(f"calcbench: {args.name}: {err}")
 
     median = {k: round(statistics.median(r[k] for r in results), 1) for k in results[0]}
     median["map_ms_min"] = round(min(r["map_ms"] for r in results), 1)
-    print(json.dumps({"name": args.name, "runs": args.runs, **median}))
+    print(json.dumps({"name": args.name, "runs": args.runs, "cold": args.cold, **median}))
 
 
 if __name__ == "__main__":

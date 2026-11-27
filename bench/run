@@ -15,7 +15,7 @@
 # running copy instead of starting).
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+root=$(cd "$(dirname "$0")/.." && pwd)
 
 runs=10
 bin=
@@ -30,13 +30,19 @@ while (($#)); do
     *) echo "Usage: bench/run [--runs N] [--bin PATH] [--cold]" >&2; exit 2 ;;
   esac
 done
+# --bin is relative to where it was typed, or a name on PATH.
+if [[ -n $bin ]]; then
+  [[ $bin == */* ]] || bin=$(command -v "$bin" || echo "$bin")
+  [[ -f $bin && -x $bin ]] || { echo "Not an executable file: $bin" >&2; exit 2; }
+  bin=$(realpath "$bin")
+fi
+cd "$root"
 
 if [[ -z $bin ]]; then
   cargo build --release --locked --quiet
   target=$(cargo metadata --format-version 1 --no-deps | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
   bin=$target/release/alias-calc
 fi
-[[ -x $bin ]] || { echo "Not an executable: $bin" >&2; exit 2; }
 if ((${#cold[@]})); then
   echo "Dropping the page cache before each launch needs sudo." >&2
   sudo -v
