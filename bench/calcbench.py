@@ -5,9 +5,10 @@ Each run starts the command, then times how long Hyprland takes to report the
 window opened (`openwindow` on its event socket, sent once the app's first
 buffer maps the toplevel). After the window settles, it reads PSS, RSS and the
 thread count for the process tree, then counts context switches (wakeups) over
-an idle period. It prints the medians as one JSON line.
+an idle period. It prints the medians as one JSON line. With --cold, it
+drops the page cache before each run (sudo -n: ask for sudo first).
 
-Usage: calcbench.py [--runs N] <name> <window-class> -- cmd args...
+Usage: calcbench.py [--runs N] [--cold] <name> <window-class> -- cmd args...
        calcbench.py --table < results.jsonl
 
 The windows open on the current workspace, so leave the machine alone while it
@@ -162,6 +163,15 @@ def run_once(cmd, wclass, path):
                 wakeups_s=idle_wakeups)
 
 
+def drop_caches():
+    """Empty the page cache, so the next start reads from disk. bench/run
+    asked for sudo once, so this doesn't prompt."""
+    subprocess.run(["sync"], check=True)
+    subprocess.run(["sudo", "-n", "tee", "/proc/sys/vm/drop_caches"], input=b"3\n",
+                   stdout=subprocess.DEVNULL, check=True)
+    time.sleep(SETTLE)
+
+
 def stop(proc):
     """SIGTERM the app's process group, then SIGKILL it if it lingers (a
     lingering GNOME Calculator would take over the next run's launch)."""
@@ -205,6 +215,7 @@ def main():
     split = argv.index("--")
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=10, choices=range(1, 1001), metavar="N")
+    parser.add_argument("--cold", action="store_true")
     parser.add_argument("name")
     parser.add_argument("wclass")
     args = parser.parse_args(argv[:split])
@@ -212,7 +223,11 @@ def main():
     path = event_socket()
 
     try:
-        results = [run_once(cmd, args.wclass.lower(), path) for _ in range(args.runs)]
+        results = []
+        for _ in range(args.runs):
+            if args.cold:
+                drop_caches()
+            results.append(run_once(cmd, args.wclass.lower(), path))
     except (TimeoutError, socket.timeout):
         sys.exit(f"calcbench: {args.name}: no window within {MAP_TIMEOUT:.0f} s")
     except (OSError, RuntimeError) as err:

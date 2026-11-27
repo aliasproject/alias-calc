@@ -43,6 +43,8 @@ Alias Calc must beat omacalc and GNOME Calculator on startup, memory and idle wa
 ```sh
 OMACALC=/path/to/omacalc bench/run          # 10 runs each
 bench/run --runs 3                           # quicker
+bench/run --bin /usr/bin/alias-calc          # the installed package, not this checkout
+bench/run --cold                             # drop the page cache before each launch (sudo)
 ```
 
 For each app it times exec until Hyprland reports the window open, reads PSS, RSS and threads 2 s later, and counts wakeups over the next 5 idle seconds. It prints the medians as one table. The windows open on the current workspace, so leave the machine alone while it runs. omacalc builds from <https://github.com/omacom/omacalc> with `bin/build`.
