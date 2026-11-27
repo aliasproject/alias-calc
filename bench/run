@@ -2,7 +2,12 @@
 # Benchmark Alias Calc against omacalc and GNOME Calculator and print one
 # table. Needs a Hyprland session; the windows open on the current workspace.
 #
-#   bench/run [--runs N]
+#   bench/run [--runs N] [--bin PATH] [--cold]
+#
+# --bin times that Alias Calc (the installed /usr/bin/alias-calc, say)
+# instead of building this checkout. --cold drops the page cache before
+# every launch (sudo, asked for once up front), so each start reads its
+# binary and libraries from disk.
 #
 # omacalc comes from $OMACALC, else `omacalc` on PATH, else it's skipped.
 # Build it from https://github.com/omacom/omacalc with `bin/build`.
@@ -10,19 +15,38 @@
 # running copy instead of starting).
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+root=$(cd "$(dirname "$0")/.." && pwd)
 
 runs=10
+bin=
+cold=()
 while (($#)); do
   case $1 in
     --runs) runs=${2:?--runs needs a number}; shift 2 ;;
     --runs=*) runs=${1#--runs=}; shift ;;
-    *) echo "Usage: bench/run [--runs N]" >&2; exit 2 ;;
+    --bin) bin=${2:?--bin needs a path}; shift 2 ;;
+    --bin=*) bin=${1#--bin=}; shift ;;
+    --cold) cold=(--cold); shift ;;
+    *) echo "Usage: bench/run [--runs N] [--bin PATH] [--cold]" >&2; exit 2 ;;
   esac
 done
+# --bin is relative to where it was typed, or a name on PATH.
+if [[ -n $bin ]]; then
+  [[ $bin == */* ]] || bin=$(command -v "$bin" || echo "$bin")
+  [[ -f $bin && -x $bin ]] || { echo "Not an executable file: $bin" >&2; exit 2; }
+  bin=$(realpath "$bin")
+fi
+cd "$root"
 
-cargo build --release --locked --quiet
-target=$(cargo metadata --format-version 1 --no-deps | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+if [[ -z $bin ]]; then
+  cargo build --release --locked --quiet
+  target=$(cargo metadata --format-version 1 --no-deps | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+  bin=$target/release/alias-calc
+fi
+if ((${#cold[@]})); then
+  echo "Dropping the page cache before each launch needs sudo." >&2
+  sudo -v
+fi
 
 # Measure every app as the floating window it is in daily use (aliasOS
 # floats GNOME Calculator already). The rule lasts until Hyprland reloads
@@ -35,12 +59,12 @@ bench() {
   local name=$1 class=$2
   shift 2
   local row
-  if row=$(python3 -I bench/calcbench.py --runs "$runs" "$name" "$class" -- "$@"); then
+  if row=$(python3 -I bench/calcbench.py --runs "$runs" "${cold[@]}" "$name" "$class" -- "$@"); then
     results+=("$row")
   fi
 }
 
-bench alias-calc com.aliasproject.calc "$target/release/alias-calc"
+bench alias-calc com.aliasproject.calc "$bin"
 # The table still prints the others, but a run without Alias Calc's own row
 # is a failure.
 alias_calc_measured=${#results[@]}

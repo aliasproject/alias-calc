@@ -5,9 +5,10 @@ Each run starts the command, then times how long Hyprland takes to report the
 window opened (`openwindow` on its event socket, sent once the app's first
 buffer maps the toplevel). After the window settles, it reads PSS, RSS and the
 thread count for the process tree, then counts context switches (wakeups) over
-an idle period. It prints the medians as one JSON line.
+an idle period. It prints the medians as one JSON line. With --cold, it
+drops the page cache before each run (sudo -n: ask for sudo first).
 
-Usage: calcbench.py [--runs N] <name> <window-class> -- cmd args...
+Usage: calcbench.py [--runs N] [--cold] <name> <window-class> -- cmd args...
        calcbench.py --table < results.jsonl
 
 The windows open on the current workspace, so leave the machine alone while it
@@ -26,6 +27,7 @@ import time
 SETTLE = 2.0  # seconds after map before reading memory
 IDLE = 5.0  # seconds of idle to count wakeups over
 MAP_TIMEOUT = 10.0
+COLD_MAP_TIMEOUT = 30.0  # a start that reads everything from disk
 
 
 def event_socket():
@@ -162,6 +164,15 @@ def run_once(cmd, wclass, path):
                 wakeups_s=idle_wakeups)
 
 
+def drop_caches():
+    """Empty the page cache, so the next start reads from disk. bench/run
+    asked for sudo once, so this doesn't prompt."""
+    subprocess.run(["sync"], check=True)
+    subprocess.run(["sudo", "-n", "tee", "/proc/sys/vm/drop_caches"], input=b"3\n",
+                   stdout=subprocess.DEVNULL, check=True)
+    time.sleep(SETTLE)
+
+
 def stop(proc):
     """SIGTERM the app's process group, then SIGKILL it if it lingers (a
     lingering GNOME Calculator would take over the next run's launch)."""
@@ -193,7 +204,8 @@ def table():
         cells = [row[k] / 1024 if k.endswith("_kb") else row[k] for k, _ in cols]
         print(f"{row['name']:18}" + "".join(f"{v:>11.1f}" for v in cells))
     if rows:
-        print(f"median of {rows[0]['runs']} runs each")
+        cold = ", from a cold page cache" if any(r.get("cold") for r in rows) else ""
+        print(f"median of {rows[0]['runs']} runs each{cold}")
 
 
 def main():
@@ -205,22 +217,34 @@ def main():
     split = argv.index("--")
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=10, choices=range(1, 1001), metavar="N")
+    parser.add_argument("--cold", action="store_true")
     parser.add_argument("name")
     parser.add_argument("wclass")
     args = parser.parse_args(argv[:split])
     cmd = argv[split + 1:]
     path = event_socket()
+    global MAP_TIMEOUT
+    if args.cold:
+        MAP_TIMEOUT = COLD_MAP_TIMEOUT
 
     try:
-        results = [run_once(cmd, args.wclass.lower(), path) for _ in range(args.runs)]
+        results = []
+        for _ in range(args.runs):
+            if args.cold:
+                drop_caches()
+            results.append(run_once(cmd, args.wclass.lower(), path))
     except (TimeoutError, socket.timeout):
         sys.exit(f"calcbench: {args.name}: no window within {MAP_TIMEOUT:.0f} s")
+    except subprocess.CalledProcessError as err:
+        why = "; --cold needs sudo, asked for first by bench/run" if err.cmd[0] == "sudo" else ""
+        sys.exit(f"calcbench: {args.name}: couldn't drop the caches ({' '.join(err.cmd)}"
+                 f" exited {err.returncode}){why}")
     except (OSError, RuntimeError) as err:
         sys.exit(f"calcbench: {args.name}: {err}")
 
     median = {k: round(statistics.median(r[k] for r in results), 1) for k in results[0]}
     median["map_ms_min"] = round(min(r["map_ms"] for r in results), 1)
-    print(json.dumps({"name": args.name, "runs": args.runs, **median}))
+    print(json.dumps({"name": args.name, "runs": args.runs, "cold": args.cold, **median}))
 
 
 if __name__ == "__main__":
