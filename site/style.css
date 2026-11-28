@@ -79,15 +79,6 @@ pre {
   padding: 0 var(--space-12);
 }
 
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
 .skip {
   position: absolute;
   left: var(--space-2);
@@ -505,6 +496,9 @@ main > section {
   text-decoration: underline;
   text-underline-offset: var(--space-1);
   cursor: pointer;
+}
+.copy-status:empty {
+  display: none;
 }
 .copy:hover {
   background: var(--key-held);

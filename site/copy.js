@@ -16,13 +16,18 @@ for (const block of document.querySelectorAll(".code")) {
   };
   show("Copy", true);
   let reset;
-  const status = document.createElement("span");
+  // Says what happened, under the block: a long message would cover the
+  // commands if it were the button's label.
+  const status = document.createElement("p");
   status.setAttribute("role", "status");
-  status.className = "visually-hidden";
+  status.className = "small copy-status";
   button.addEventListener("click", async () => {
     clearTimeout(reset);
-    // Cleared first, so the same message is announced again.
+    show("Copy", true);
+    // Cleared, then set a moment later, so a repeated message is announced
+    // again.
     status.textContent = "";
+    await new Promise((resolve) => setTimeout(resolve, 50));
     // Copy the commands only: no prompts, no comments.
     const text = [...code.childNodes]
       .filter((n) => !(n.classList && (n.classList.contains("prompt") || n.classList.contains("comment"))))
@@ -35,17 +40,17 @@ for (const block of document.querySelectorAll(".code")) {
       await navigator.clipboard.writeText(text);
     } catch {
       // Stays until the next click, so there's time to read it.
-      show("Select the text to copy", false);
       status.textContent = "Couldn't copy. Select the text to copy it.";
       return;
     }
     show("Copied", true);
-    status.textContent = "Copied to the clipboard";
+    status.textContent = "Copied to the clipboard.";
     reset = setTimeout(() => {
       show("Copy", true);
       status.textContent = "";
     }, noticeMs);
   });
   block.classList.add("copyable");
-  block.append(button, status);
+  block.append(button);
+  block.after(status);
 }
