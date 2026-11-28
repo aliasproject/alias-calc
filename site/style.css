@@ -497,8 +497,10 @@ main > section {
   text-underline-offset: var(--space-1);
   cursor: pointer;
 }
+/* Empty, it stays in the accessibility tree (so screen readers announce
+   what it says next) but takes no place in the layout. */
 .copy-status:empty {
-  display: none;
+  position: absolute;
 }
 .copy:hover {
   background: var(--key-held);

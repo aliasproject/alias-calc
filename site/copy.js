@@ -24,10 +24,6 @@ for (const block of document.querySelectorAll(".code")) {
   button.addEventListener("click", async () => {
     clearTimeout(reset);
     show("Copy", true);
-    // Cleared, then set a moment later, so a repeated message is announced
-    // again.
-    status.textContent = "";
-    await new Promise((resolve) => setTimeout(resolve, 50));
     // Copy the commands only: no prompts, no comments.
     const text = [...code.childNodes]
       .filter((n) => !(n.classList && (n.classList.contains("prompt") || n.classList.contains("comment"))))
@@ -36,9 +32,18 @@ for (const block of document.querySelectorAll(".code")) {
       .split("\n")
       .map((line) => line.trimEnd())
       .join("\n");
+    // The clipboard first, while the click still counts as the user's.
+    let copied = true;
     try {
       await navigator.clipboard.writeText(text);
     } catch {
+      copied = false;
+    }
+    // Cleared, then set a moment later, so a repeated message is announced
+    // again.
+    status.textContent = "";
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!copied) {
       // Stays until the next click, so there's time to read it.
       status.textContent = "Couldn't copy. Select the text to copy it.";
       return;
