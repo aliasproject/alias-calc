@@ -50,6 +50,8 @@ for (const block of document.querySelectorAll(".code")) {
     }
     show("Copied", true);
     status.textContent = "Copied to the clipboard.";
+    // Another click may have set a timer during the pause.
+    clearTimeout(reset);
     reset = setTimeout(() => {
       show("Copy", true);
       status.textContent = "";
