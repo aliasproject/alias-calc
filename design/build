@@ -1,0 +1,15 @@
+#!/bin/sh
+# Builds the themes from design/tokens.json (design/README.md).
+#
+#   design/build          write the generated files
+#   design/build --check  exit 1 if a generated file is out of date, or a
+#                         contrast pair misses its minimum
+#
+# The generator is the Rust program in design/src, with no dependencies.
+# It builds into the repo's target/ folder, apart from the app's builds.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+exec cargo run --quiet --locked \
+    --manifest-path "$here/Cargo.toml" \
+    --target-dir "$here/../target/design-build" \
+    -- "$@"

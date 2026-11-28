@@ -1,0 +1,182 @@
+/* Generated from design/tokens.json by design/build (design-gen 2.1.0) — don't edit. */
+/* The website reads the generated CSS. The app still holds these values as literals in src/ui.rs and src/window.rs, which must match this file; generating src/tokens.rs and wiring the app to it is still to do. */
+
+:root {
+  /* Colours: aliasOS default (built-in, dark). */
+  /* Theme input. The window's ground, and the website's page. Read from background in colors.toml; this is the built-in fallback (Palette::default, src/ui.rs). */
+  --background: #131a1f;
+  /* Theme input, made readable on background, key and key-held. The result, digits and the focus ring in the app; headings and body text on the website. */
+  --foreground: #d8dde0;
+  /* Theme input (accent, else color4, else foreground). The = key's fill, and on the website the primary button's fill and links on background. */
+  --accent: #7f96a1;
+  /* Derived: background 65% of the way to foreground, made readable on background. The expression line; on the website secondary text, captions and the secondary button's border. */
+  --muted: #93999c;
+  /* Derived: muted made readable on key and key-held. The C, ±, % and ⌫ labels; on the website comments in code blocks. */
+  --function: #a3a8ab;
+  /* Derived: accent made readable on key and key-held. The ÷ × − + labels; on the website the $ prompt in code blocks. */
+  --operator: #99abb4;
+  /* Derived: background 8% towards foreground (6% on a light theme). Key fills; on the website cards, code blocks and the secondary button's fill, and 1 px dividers. */
+  --key: #232a2e;
+  /* Derived: background 18% towards foreground (14% light). A held key; on the website a hovered or pressed secondary button. */
+  --key-held: #363d42;
+  /* Derived: background or foreground, whichever reads better on accent, made readable on it. The = label; the primary button's text on the website. */
+  --on-accent: #131a1f;
+  /* Derived: accent 25% away from on-accent (lighter under a dark label). A held =; the primary button hovered or pressed on the website. */
+  --accent-held: #9fb0b9;
+  /* Derived: accent made readable on background. "Copied" in place of the expression line. */
+  --notice: #7f96a1;
+  /* The app icon's tile (packaging/icons/com.aliasproject.calc.svg). Icon and favicon only, never UI. */
+  --icon-tile: #26262a;
+  /* The icon's corner: amber, Alias Calc's colour in the Alias app family. Icon and favicon only, never UI or text. */
+  --icon-corner: #ffb545;
+  /* The four operators drawn on the icon tile. Icon only. */
+  --icon-glyph: #f4f4f2;
+
+  /* Font families. */
+  /* The only family. The app compiles 9 KB subsets of Light and Regular into the binary (fonts/); the website self-hosts full JetBrains Mono woff2 files (OFL) in Light, Regular and SemiBold. */
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Type, app: sizes in rem (px ÷ 16). Logical px at the aliasOS default text size (12 px). Every size scales by base-size ÷ 12, from 0.75 to 2 (src/textsize.rs). */
+  /* The result (DISPLAY_SIZE). Shrinks to fit the width, down to result-min and further rather than clip a digit. */
+  --result-size: 3.75rem;
+  --result-weight: 300;
+  --result-line-height: 1;
+  /* The smallest the result shrinks before it would clip (DISPLAY_MIN_SIZE). */
+  --result-min-size: 1rem;
+  --result-min-weight: 300;
+  --result-min-line-height: 1;
+  /* The expression line and "Copied" (EXPRESSION_SIZE). */
+  --expression-size: 1.125rem;
+  --expression-weight: 400;
+  /* The smallest the expression line shrinks before it drops characters from the start behind … (EXPRESSION_MIN_SIZE). */
+  --expression-min-size: 0.8125rem;
+  --expression-min-weight: 400;
+  /* Digit and function labels (KEY_SIZE), capped at half the key's height. */
+  --key-label-size: 1.5rem;
+  --key-label-weight: 400;
+  /* ÷ × − + = at KEY_SIZE × 1.3, since JetBrains Mono draws operators small next to its digits; 28.8 at the default window, from the half-height cap. */
+  --operator-label-size: 1.95rem;
+  --operator-label-weight: 400;
+
+  /* Type, web: sizes in rem (px ÷ 16). The website (site/, github.io). Sizes are px at a 16 px root; the CSS writes them in rem, so text follows the browser's font size. */
+  /* The hero line, in the result's Light weight. web-hero-narrow under 640 px wide. */
+  --web-hero-size: 3.5rem;
+  --web-hero-weight: 300;
+  --web-hero-line-height: 1.05;
+  --web-hero-letter-spacing: -0.02em;
+  /* The hero line under 640 px wide, so it fits a phone at 200% text. */
+  --web-hero-narrow-size: 2.25rem;
+  --web-hero-narrow-weight: 300;
+  --web-hero-narrow-line-height: 1.05;
+  --web-hero-narrow-letter-spacing: -0.02em;
+  /* Benchmark figures (3.0 ms, 2.4 MiB): the result style, smaller. */
+  --web-stat-size: 2.75rem;
+  --web-stat-weight: 300;
+  --web-stat-line-height: 1;
+  /* Section headings. */
+  --web-heading-size: 1.75rem;
+  --web-heading-weight: 400;
+  --web-heading-line-height: 1.25;
+  --web-heading-letter-spacing: -0.01em;
+  /* Card titles, the wordmark in the header. */
+  --web-title-size: 1rem;
+  --web-title-weight: 600;
+  --web-title-line-height: 1.4;
+  /* Running text, the hero's lead. */
+  --web-body-size: 1rem;
+  --web-body-weight: 400;
+  --web-body-line-height: 1.7;
+  /* Card text, table cells, captions, nav links, buttons. */
+  --web-small-size: 0.875rem;
+  --web-small-weight: 400;
+  --web-small-line-height: 1.6;
+  /* Install commands and key names in code blocks. */
+  --web-code-size: 0.875rem;
+  --web-code-weight: 400;
+  --web-code-line-height: 1.7;
+  /* Eyebrows and table heads, in capitals. Also the canvas boards' panel labels. */
+  --web-label-size: 0.6875rem;
+  --web-label-weight: 600;
+  --web-label-line-height: 1.4;
+  --web-label-letter-spacing: 0.14em;
+
+  /* Spacing. */
+  /* The window's padding around the display and keypad (PADDING, src/ui.rs). */
+  --window-padding: 12px;
+  /* Between keys, and between the display and the keypad (GAP). */
+  --key-gap: 6px;
+  /* The focus ring's gap from its key, inside the 6 px between keys (FOCUS_OFFSET); the same on the website. */
+  --focus-offset: 2px;
+  /* Website: inside badges, between a label and its value. */
+  --space-1: 4px;
+  /* Website: between buttons, between an icon and its text. */
+  --space-2: 8px;
+  /* Website: list rows, small card gaps (the window padding). */
+  --space-3: 12px;
+  /* Website: code block padding, gaps in a grid of cards on phones. */
+  --space-4: 16px;
+  /* Website: card padding, gaps in a grid of cards. */
+  --space-6: 24px;
+  /* Website: page side padding on phones; between a heading and its content. */
+  --space-8: 32px;
+  /* Website: page side padding from 640 px wide; between sections on phones. */
+  --space-12: 48px;
+  /* Website: between sections (space-12 on phones, under 640 px wide). */
+  --space-24: 96px;
+
+  /* Corner radii. */
+  /* Key corners (RADIUS, src/ui.rs), near the 2 px aliasOS windows use. On the website: buttons, cards, code blocks. */
+  --key-radius: 4px;
+  /* Website: badges and key caps in text, square like aliasOS windows. */
+  --radius-sm: 2px;
+
+  /* Fixed sizes. */
+  /* The width the window opens at (DEFAULT_SIZE, src/window.rs), scaled with the text size. */
+  --window-width: 320px;
+  /* The height the window opens at (DEFAULT_SIZE). */
+  --window-height: 480px;
+  /* The narrowest the window goes (MIN_SIZE), chosen to keep key-min. */
+  --window-min-width: 260px;
+  /* The shortest the window goes (MIN_SIZE). */
+  --window-min-height: 400px;
+  /* The smallest a key gets either way (MIN_KEY): the house touch-target rule. Also every website control's minimum height. */
+  --key-min: 44px;
+  /* The focus ring's width, in foreground (FOCUS_WIDTH); the same on the website. */
+  --focus-width: 2px;
+  /* Website: the widest the page's content gets. */
+  --content-max: 1120px;
+  /* Website: the width of decorative dividers (header and footer rules, the line above each benchmark figure) and the secondary button's border, drawn in key or muted. */
+  --rule-width: 1px;
+
+  /* Motion. */
+  /* How long "Copied" shows (NOTICE_TIME, src/window.rs). No fade: it appears and goes. */
+  --notice-time: 1200ms;
+  /* Backspace repeat delay when the compositor doesn't send one (DEFAULT_REPEAT). */
+  --repeat-delay: 600ms;
+  /* Backspace repeat rate when the compositor doesn't send one (DEFAULT_REPEAT). */
+  --repeat-interval: 40ms;
+
+  /* Unitless multiples. */
+  /* The share of the window's height above the keypad (DISPLAY_SHARE). */
+  --display-share: 0.3;
+  /* Operator and = labels against KEY_SIZE. */
+  --operator-scale: 1.3;
+  /* The most of a key's height its label may take. */
+  --label-cap: 0.5;
+  /* key: how far background moves towards foreground on a dark theme (0.06 light, key-mix-light). */
+  --key-mix-dark: 0.08;
+  /* key on a light theme. */
+  --key-mix-light: 0.06;
+  /* key-held on a dark theme (0.14 light). */
+  --key-held-mix-dark: 0.18;
+  /* key-held on a light theme. */
+  --key-held-mix-light: 0.14;
+  /* muted: how far background moves towards foreground before readable(). */
+  --muted-mix: 0.65;
+  /* accent-held: how far accent moves away from its label. */
+  --accent-held-mix: 0.25;
+  /* The smallest text-size factor followed (src/textsize.rs). */
+  --text-scale-min: 0.75;
+  /* The largest text-size factor followed: WCAG 1.4.4's 200%. */
+  --text-scale-max: 2;
+}

@@ -1,0 +1,18 @@
+# design/build: generates the themes from design/tokens.json and checks
+# them (design/README.md). Its own workspace, with no dependencies, so the
+# design/ folder can be copied unchanged into any app (Nitrate, Alias Notes,
+# Daybreak, bosun, Alias Calc): everything app-specific is in tokens.json.
+[package]
+name = "design-build"
+version = "2.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "design-build"
+path = "src/main.rs"
+
+[dependencies]
+
+[workspace]

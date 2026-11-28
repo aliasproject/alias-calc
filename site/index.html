@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alias Calc: a tiny, instant calculator for Linux</title>
+<meta name="description" content="Alias Calc is a calculator for Linux that opens in 3 ms, runs in one thread and does exact decimal math. It follows your theme and works with the keyboard and a screen reader.">
+<meta name="theme-color" content="#131a1f">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+<script src="copy.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+<div class="wrap">
+<a class="brand" href="./"><img src="icon.svg" alt="">Alias Calc</a>
+<nav aria-label="Main">
+<ul class="links">
+<li><a href="#features">Features</a></li>
+<li><a href="#benchmarks">Benchmarks</a></li>
+<li><a href="#install">Install</a></li>
+<li><a href="https://github.com/aliasproject/alias-calc">GitHub</a></li>
+</ul>
+</nav>
+</div>
+</header>
+
+<main id="main">
+<section class="wrap hero" aria-labelledby="hero-title">
+<div class="hero-text">
+<p class="eyebrow">Calculator for Linux</p>
+<h1 id="hero-title">A tiny, instant calculator.</h1>
+<p class="lead">Alias Calc opens its window in 3 ms, idles in one thread, waking only for the compositor's ping, and does exact decimal math. It takes its colours from your desktop theme and works with the keyboard and a screen reader.</p>
+<div class="actions">
+<a class="button primary" href="#install">Install</a>
+<a class="button secondary" href="https://github.com/aliasproject/alias-calc">View on GitHub</a>
+</div>
+<ul class="badges" aria-label="At a glance">
+<li>MIT</li>
+<li>v0.1.2</li>
+<li>1.05 MB binary</li>
+</ul>
+</div>
+<figure class="window" role="img" aria-label="The Alias Calc window, showing 1,234.5 × 2 + 246.9 = 2,715.9">
+<div class="display" aria-hidden="true"><span class="expression">1,234.5 × 2 + 246.9 =</span><span class="result">2,715.9</span></div>
+<div class="keys" aria-hidden="true">
+<span class="fn">C</span><span class="fn">±</span><span class="fn">%</span><span class="op">÷</span>
+<span>7</span><span>8</span><span>9</span><span class="op">×</span>
+<span>4</span><span>5</span><span>6</span><span class="op">−</span>
+<span>1</span><span>2</span><span>3</span><span class="op">+</span>
+<span>0</span><span>.</span><span class="fn">⌫</span><span class="eq">=</span>
+</div>
+</figure>
+</section>
+
+<section id="benchmarks" class="wrap" aria-labelledby="bench-title">
+<div class="section-head">
+<p class="eyebrow">Benchmarks</p>
+<h2 id="bench-title">Measured, not claimed.</h2>
+<p class="intro">Time from launch until the compositor reports the window open, memory 2 s later, and wakeups over the next 5 idle seconds. The one wakeup left is the compositor's ping, which every window gets.</p>
+</div>
+<dl class="stats">
+<div><dt>to the window on screen</dt><dd>3.0 ms</dd></div>
+<div><dt>of memory while open</dt><dd>2.4 MiB</dd></div>
+<div><dt>thread, with no screen reader running</dt><dd>1</dd></div>
+<div><dt>wakeups a second when idle: the compositor's ping only</dt><dd>0.6</dd></div>
+</dl>
+<p class="small method">Median of 10 runs of Alias Calc 0.1.2 with <code>bench/run</code>, on Hyprland 0.57 with a 4K display at scale 1. Memory is proportional set size. <a href="https://github.com/aliasproject/alias-calc#benchmark">Run the benchmark yourself</a></p>
+</section>
+
+<section id="features" class="wrap" aria-labelledby="features-title">
+<div class="section-head">
+<p class="eyebrow">Features</p>
+<h2 id="features-title">Everything a calculator needs, and nothing it doesn't.</h2>
+</div>
+<div class="cards">
+<article class="card">
+<h3>Exact decimals</h3>
+<p>Numbers are decimals, not floats, so 0.1 + 0.2 is 0.3 and 16-digit integers show exactly. Past a decimal's range it falls back to floating point, so 10 ^ 308 still works.</p>
+<p class="example"><code>0.1 + 0.2 = 0.3</code></p>
+</article>
+<article class="card">
+<h3>Keyboard first</h3>
+<p>Every key has a key: 0–9 . + − × ÷ ^ %, Enter or =, Backspace (it repeats), C or Escape, and S to change sign. The numpad works with NumLock on or off.</p>
+<p class="example"><code>Tab, arrows, Space</code></p>
+</article>
+<article class="card">
+<h3>Copy and paste</h3>
+<p>Ctrl+C copies the result without separators. Paste a number with or without them: 1,234.5, 1 234,5 and 12,34 all work, and anything else is ignored.</p>
+<p class="example"><code>Ctrl+C · Ctrl+V</code></p>
+</article>
+<article class="card">
+<h3>Follows your theme</h3>
+<p>On aliasOS or Omarchy, the colours come from your live theme and change the moment it does. Any theme still meets WCAG AA: a colour that would be hard to read is adjusted.</p>
+<p class="example"><code>Built-in dark palette otherwise</code></p>
+</article>
+<article class="card">
+<h3>Screen reader</h3>
+<p>With a screen reader running, every key is a named button and the result is read out when it changes. That support loads only when a screen reader is running, so it costs nothing otherwise.</p>
+<p class="example"><code>Loads only when needed</code></p>
+</article>
+<article class="card">
+<h3>No toolkit</h3>
+<p>Drawn on the CPU straight into a Wayland buffer, sharp at fractional scales. It links only libc and libxkbcommon.</p>
+<p class="example"><code>1.05 MB, one thread</code></p>
+</article>
+</div>
+</section>
+
+<section class="wrap" aria-labelledby="themes-title">
+<div class="section-head">
+<p class="eyebrow">Themes</p>
+<h2 id="themes-title">Your theme, readable.</h2>
+<p class="intro">Four themes, each window at its smallest size. Alias Calc reads three colours from the theme and works out the rest, nudging any text that would fall under 4.5:1.</p>
+</div>
+<!-- Each theme's background, foreground and accent, and the colours Alias
+     Calc derives from them (Palette::new in src/ui.rs). -->
+<div class="themes" role="region" aria-label="Alias Calc in four themes" tabindex="0">
+<figure>
+<div class="window small" role="img" aria-label="Alias Calc in Tarnished: dark blue-grey with blue operators, showing 0.1 + 0.2 = 0.3" style="--w-bg: #0b111a; --w-fg: #c5ced6; --w-muted: #848c94; --w-fn: #969da4; --w-op: #76a2cf; --w-key: #1a2029; --w-accent: #5e92c6; --w-on-accent: #0b111a">
+<div class="display" aria-hidden="true"><span class="expression">0.1 + 0.2 =</span><span class="result">0.3</span></div>
+<div class="keys" aria-hidden="true"><span class="fn">C</span><span class="fn">±</span><span class="fn">%</span><span class="op">÷</span><span>7</span><span>8</span><span>9</span><span class="op">×</span><span>4</span><span>5</span><span>6</span><span class="op">−</span><span>1</span><span>2</span><span>3</span><span class="op">+</span><span>0</span><span>.</span><span class="fn">⌫</span><span class="eq">=</span></div>
+</div>
+<figcaption>Tarnished</figcaption>
+</figure>
+<figure>
+<div class="window small" role="img" aria-label="Alias Calc in Ember Night: deep navy with orange-red operators, showing 2 ^ 10 = 1,024" style="--w-bg: #081822; --w-fg: #dce4e8; --w-muted: #929da3; --w-fn: #9da7ac; --w-op: #f5856a; --w-key: #192832; --w-accent: #f0502a; --w-on-accent: #081822">
+<div class="display" aria-hidden="true"><span class="expression">2 ^ 10 =</span><span class="result">1,024</span></div>
+<div class="keys" aria-hidden="true"><span class="fn">C</span><span class="fn">±</span><span class="fn">%</span><span class="op">÷</span><span>7</span><span>8</span><span>9</span><span class="op">×</span><span>4</span><span>5</span><span>6</span><span class="op">−</span><span>1</span><span>2</span><span>3</span><span class="op">+</span><span>0</span><span>.</span><span class="fn">⌫</span><span class="eq">=</span></div>
+</div>
+<figcaption>Ember Night</figcaption>
+</figure>
+<figure>
+<div class="window small" role="img" aria-label="Alias Calc in Papercraft: charcoal with warm parchment text and orange operators, showing 1,234.5 × 2 = 2,469" style="--w-bg: #1a1a1c; --w-fg: #d8ccb8; --w-muted: #968e81; --w-fn: #aba59a; --w-op: #e38f62; --w-key: #292828; --w-accent: #d9692e; --w-on-accent: #1a1a1c">
+<div class="display" aria-hidden="true"><span class="expression">1,234.5 × 2 =</span><span class="result">2,469</span></div>
+<div class="keys" aria-hidden="true"><span class="fn">C</span><span class="fn">±</span><span class="fn">%</span><span class="op">÷</span><span>7</span><span>8</span><span>9</span><span class="op">×</span><span>4</span><span>5</span><span>6</span><span class="op">−</span><span>1</span><span>2</span><span>3</span><span class="op">+</span><span>0</span><span>.</span><span class="fn">⌫</span><span class="eq">=</span></div>
+</div>
+<figcaption>Papercraft</figcaption>
+</figure>
+<figure>
+<div class="window small" role="img" aria-label="Alias Calc in Night City: near-black with yellow operators, showing 19.99 × 3 = 59.97" style="--w-bg: #0a0c10; --w-fg: #d4e2e4; --w-muted: #8d979a; --w-fn: #939c9f; --w-op: #e8cf45; --w-key: #1a1d21; --w-accent: #e8cf45; --w-on-accent: #0a0c10">
+<div class="display" aria-hidden="true"><span class="expression">19.99 × 3 =</span><span class="result">59.97</span></div>
+<div class="keys" aria-hidden="true"><span class="fn">C</span><span class="fn">±</span><span class="fn">%</span><span class="op">÷</span><span>7</span><span>8</span><span>9</span><span class="op">×</span><span>4</span><span>5</span><span>6</span><span class="op">−</span><span>1</span><span>2</span><span>3</span><span class="op">+</span><span>0</span><span>.</span><span class="fn">⌫</span><span class="eq">=</span></div>
+</div>
+<figcaption>Night City</figcaption>
+</figure>
+</div>
+</section>
+
+<section id="install" class="wrap" aria-labelledby="install-title">
+<div class="section-head">
+<p class="eyebrow">Install</p>
+<h2 id="install-title">Build it, or take the package.</h2>
+</div>
+<div class="install">
+<div>
+<h3>From source</h3>
+<div class="code"><pre><code><span class="prompt">$ </span>git clone https://github.com/aliasproject/alias-calc
+<span class="prompt">$ </span>cd alias-calc
+<span class="prompt">$ </span>./install.sh            <span class="comment"># build, install into ~/.local</span>
+<span class="prompt">$ </span>./install.sh uninstall</code></pre></div>
+<p class="small">It installs the binary, the screen reader library, a desktop entry ("Calculator" in your launcher) and the icons.</p>
+<h3>Requirements</h3>
+<ul class="requirements">
+<li>Linux on x86_64 or aarch64</li>
+<li>A Wayland desktop</li>
+<li>libxkbcommon</li>
+<li>To build from source: Rust 1.85 or newer and a C linker</li>
+</ul>
+</div>
+<div>
+<h3>Packages</h3>
+<div class="package">
+<p class="small">On aliasOS, it's in the aliasOS package repository:</p>
+<div class="code"><pre><code><span class="prompt">$ </span>sudo pacman -S alias-calc</code></pre></div>
+</div>
+<p class="small">Packages for other distributions aren't published yet. Until then, build from source.</p>
+</div>
+</div>
+</section>
+</main>
+
+<footer class="site-footer">
+<div class="wrap">
+<div class="licence"><img src="icon.svg" alt=""><p class="small">Alias Calc is MIT licensed. JetBrains Mono is under the <a href="fonts/OFL.txt">SIL Open Font License 1.1</a>.</p></div>
+<ul class="links">
+<li><a href="https://github.com/aliasproject/alias-calc">Source</a></li>
+<li><a href="https://github.com/aliasproject/alias-calc/blob/main/LICENSE">Licence</a></li>
+<li><a href="https://github.com/aliasproject/alias-calc/issues">Issues</a></li>
+</ul>
+</div>
+</footer>
+</body>
+</html>
