@@ -1,6 +1,6 @@
 # Design tokens
 
-`tokens.json` is the only place an Alias Calc design value is defined: the colours of its one theme, JetBrains Mono and the type scales (the app's and the website's), and the spacing, radii, fixed sizes, motion and multiples the window and the website use. Each value has a note on where it's used. It uses the Design System artifact format: lists of `{name, value, usage}`, with colours given per theme.
+`tokens.json` is the source for every Alias Calc design value (the app's Rust still repeats them as literals: see below): the colours of its one theme, JetBrains Mono and the type scales (the app's and the website's), and the spacing, radii, fixed sizes, motion and multiples the window and the website use. Each value has a note on where it's used. It uses the Design System artifact format: lists of `{name, value, usage}`, with colours given per theme.
 
 **One theme.** Alias Calc follows the installed aliasOS theme at run time (`colors.toml`), and derives its key fills and label colours from it (`src/ui.rs`). The colours here are its built-in palette, the aliasOS default (`aliasos`), which the app falls back to (`Palette::default`) and which the website is drawn in. The contrast list checks that palette; an installed theme is made readable where it's drawn, by `readable()` in `src/ui.rs`, since this file can't check a theme it hasn't seen.
 
@@ -12,7 +12,7 @@
 
 **The app doesn't read the tokens yet.** `src/ui.rs` and `src/window.rs` still hold these values as Rust literals (`PADDING`, `GAP`, `RADIUS`, `DISPLAY_SIZE`, `DEFAULT_SIZE`, `NOTICE_TIME`…), and they must match this file: change both together. Generating `src/tokens.rs` (`outputs.rust`) and setting those constants from it is a follow-up.
 
-Some tokens are for the website alone (`"only": "web"`): the `web` type group, `space-1` to `space-24`, `radius-sm` and `content-max`. The app's tokens aren't marked, because the website draws the calculator window from them too, so they reach the CSS and, once the app is wired up, the Rust.
+Some tokens are for the website alone (`"only": "web"`): the `web` type group, `space-1` to `space-24`, `radius-sm`, `content-max`, `rule-width` and `mono-advance`. The app's tokens aren't marked, because the website draws the calculator window from them too, so they reach the CSS and, once the app is wired up, the Rust.
 
 ## Changing a value
 

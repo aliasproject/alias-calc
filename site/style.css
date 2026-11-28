@@ -359,8 +359,10 @@ main > section {
   --w-height: var(--window-height);
   --w-display: max(calc(var(--w-height) * var(--display-share)), calc(var(--expression-size) + var(--result-size)));
   --w-key-height: calc((var(--w-height) - 2 * var(--window-padding) - var(--w-display) - 4 * var(--key-gap)) / 5);
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   width: var(--w-width);
+  max-width: 100%;
+  container-type: inline-size;
   height: var(--w-height);
   margin: 0;
   padding: var(--window-padding);
@@ -387,11 +389,12 @@ main > section {
   white-space: nowrap;
 }
 .window .expression {
-  font-size: var(--expression-size);
+  font-size: min(var(--expression-size), calc((100cqi - 2 * var(--window-padding)) / (var(--chars, 1) * var(--mono-advance))));
   color: var(--w-muted);
 }
 .window .result {
-  font-size: var(--result-size);
+  /* Shrinks to fit the window's width, as the app's result does. */
+  font-size: min(var(--result-size), calc((100cqi - 2 * var(--window-padding)) / (var(--chars, 1) * var(--mono-advance))));
   font-weight: var(--result-weight);
   line-height: var(--result-line-height);
   color: var(--w-fg);

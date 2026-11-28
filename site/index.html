@@ -46,7 +46,7 @@
 </ul>
 </div>
 <figure class="window" role="img" aria-label="The Alias Calc window, showing 1,234.5 × 2 + 246.9 = 2,715.9">
-<div class="display" aria-hidden="true"><span class="expression">1,234.5 × 2 + 246.9 =</span><span class="result">2,715.9</span></div>
+<div class="display" aria-hidden="true"><span class="expression" style="--chars: 21">1,234.5 × 2 + 246.9 =</span><span class="result" style="--chars: 7">2,715.9</span></div>
 <div class="keys" aria-hidden="true">
 <span class="fn">C</span><span class="fn">±</span><span class="fn">%</span><span class="op">÷</span>
 <span>7</span><span>8</span><span>9</span><span class="op">×</span>
@@ -100,7 +100,7 @@
 </article>
 <article class="card">
 <h3>Screen reader</h3>
-<p>With a screen reader running, every key is a named button and the result is read out when it changes. That support loads only when a screen reader is running, so it costs nothing otherwise.</p>
+<p>With a screen reader running when it opens, every key is a named button and the result is read out when it changes. The support loads only then, so it costs nothing otherwise; start the screen reader first.</p>
 <p class="example"><code>Loads only when needed</code></p>
 </article>
 <article class="card">
@@ -159,24 +159,23 @@
 <div class="install">
 <div>
 <h3>From source</h3>
-<div class="code"><pre><code><span class="prompt">$ </span>git clone https://github.com/aliasproject/alias-calc
+<div class="code" data-copy-label="Copy the install commands"><pre><code><span class="prompt">$ </span>git clone https://github.com/aliasproject/alias-calc
 <span class="prompt">$ </span>cd alias-calc
-<span class="prompt">$ </span>./install.sh            <span class="comment"># build, install into ~/.local</span>
-<span class="prompt">$ </span>./install.sh uninstall</code></pre></div>
-<p class="small">It installs the binary, the screen reader library, a desktop entry ("Calculator" in your launcher) and the icons.</p>
+<span class="prompt">$ </span>./install.sh            <span class="comment"># build, install into ~/.local</span></code></pre></div>
+<p class="small">It installs the binary, the screen reader library, a desktop entry ("Calculator" in your launcher) and the icons. To remove them, run <code>./install.sh uninstall</code> in the same folder.</p>
 <h3>Requirements</h3>
 <ul class="requirements">
 <li>Linux on x86_64 or aarch64</li>
 <li>A Wayland desktop</li>
 <li>libxkbcommon</li>
-<li>To build from source: Rust 1.85 or newer and a C linker</li>
+<li>To build from source: a current stable Rust and a C linker</li>
 </ul>
 </div>
 <div>
 <h3>Packages</h3>
 <div class="package">
 <p class="small">On aliasOS, it's in the aliasOS package repository:</p>
-<div class="code"><pre><code><span class="prompt">$ </span>sudo pacman -S alias-calc</code></pre></div>
+<div class="code" data-copy-label="Copy the aliasOS install command"><pre><code><span class="prompt">$ </span>sudo pacman -S alias-calc</code></pre></div>
 </div>
 <p class="small">Packages for other distributions aren't published yet. Until then, build from source.</p>
 </div>
