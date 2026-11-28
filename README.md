@@ -73,6 +73,12 @@ Hyprland pings every window every 1.5 s to check that it still responds (`xdg_wm
 [trace]   0.608 ms  frame committed (320x480 px)
 ```
 
+## Website
+
+The website, https://aliasproject.github.io/alias-calc/, is the static files in `site/`, with no build step. `.github/workflows/pages.yml` publishes it when `site/` changes on main. To preview it, serve the folder (`python3 -m http.server -d site`) and open http://localhost:8000.
+
+Its design values come from `site/tokens.css`, which `design/build` generates from `design/tokens.json` (`design/README.md`). Change a value there, never in `style.css`. The benchmark figures on the page come from one `bench/run --bin /usr/bin/alias-calc` table; when they change, replace all of them from a new run.
+
 ## Licence
 
-MIT (`LICENSE`). The JetBrains Mono subsets compiled into the binary are under the SIL Open Font License 1.1 (`fonts/OFL.txt`).
+MIT (`LICENSE`). The JetBrains Mono subsets compiled into the binary, and the full fonts the website serves (`site/fonts/`), are under the SIL Open Font License 1.1 (`fonts/OFL.txt`, `site/fonts/OFL.txt`).

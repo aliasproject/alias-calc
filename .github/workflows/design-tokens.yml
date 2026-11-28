@@ -1,0 +1,54 @@
+# design/tokens.json is the only source of the website's CSS custom
+# properties (design/README.md). A pull request or merge that touches it,
+# the generator or the generated file checks that site/tokens.css is current
+# and that every contrast pair passes (or is marked pending), and runs the
+# generator's own checks. The generator is a small crate with no
+# dependencies, so this needs only Rust: no container or apt packages.
+name: Design tokens
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - design/**
+      - site/tokens.css
+      - .github/workflows/design-tokens.yml
+  pull_request:
+    paths:
+      - design/**
+      - site/tokens.css
+      - .github/workflows/design-tokens.yml
+  workflow_dispatch:
+
+# A PR's runs share a group, so a new push cancels the one it supersedes.
+# Each push to main has a group of its own, so every commit gets a result.
+concurrency:
+  group: design-tokens-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The job runs pull request code: its token reads only.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: design tokens
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Fork code runs after this, so the token isn't left in git's config.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # The generator builds into target/design-build (gitignored), apart
+      # from the app's builds.
+      - run: cargo fmt --manifest-path design/Cargo.toml --check
+      - run: cargo clippy --manifest-path design/Cargo.toml --target-dir target/design-build --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path design/Cargo.toml --target-dir target/design-build --locked
+      - run: design/build --check
