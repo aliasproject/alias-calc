@@ -41,6 +41,9 @@ body {
   font-size: var(--web-body-size);
   font-weight: var(--web-body-weight);
   line-height: var(--web-body-line-height);
+  /* At a large text size on a phone, a long word breaks rather than push
+     the page sideways. */
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -101,6 +104,9 @@ pre {
 }
 .skip:focus {
   transform: none;
+}
+.skip:hover {
+  color: var(--background);
 }
 
 .eyebrow,
@@ -288,7 +294,7 @@ main > section {
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(13em, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(13em, 100%), 1fr));
   gap: 0 var(--space-8);
   margin: 0;
 }
@@ -319,7 +325,7 @@ main > section {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(18em, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(18em, 100%), 1fr));
   gap: var(--space-6);
 }
 .card {
@@ -389,12 +395,12 @@ main > section {
   white-space: nowrap;
 }
 .window .expression {
-  font-size: min(var(--expression-size), calc((100cqi - 2 * var(--window-padding)) / (var(--chars, 1) * var(--mono-advance))));
+  font-size: min(var(--expression-size), calc(100cqi / (var(--chars, 1) * var(--mono-advance))));
   color: var(--w-muted);
 }
 .window .result {
   /* Shrinks to fit the window's width, as the app's result does. */
-  font-size: min(var(--result-size), calc((100cqi - 2 * var(--window-padding)) / (var(--chars, 1) * var(--mono-advance))));
+  font-size: min(var(--result-size), calc(100cqi / (var(--chars, 1) * var(--mono-advance))));
   font-weight: var(--result-weight);
   line-height: var(--result-line-height);
   color: var(--w-fg);

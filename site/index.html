@@ -85,7 +85,7 @@
 </article>
 <article class="card">
 <h3>Keyboard first</h3>
-<p>Every key has a key: 0–9 . + − × ÷ ^ %, Enter or =, Backspace (it repeats), C or Escape, and S to change sign. The numpad works with NumLock on or off.</p>
+<p>Every key has a key: 0–9 . + - * (or x) / ^ %, Enter or =, Backspace (it repeats), C or Escape, and S to change sign. The numpad works with NumLock on or off.</p>
 <p class="example"><code>Tab, arrows, Space</code></p>
 </article>
 <article class="card">
@@ -105,7 +105,7 @@
 </article>
 <article class="card">
 <h3>No toolkit</h3>
-<p>Drawn on the CPU straight into a Wayland buffer, sharp at fractional scales. It links only libc and libxkbcommon.</p>
+<p>Drawn on the CPU straight into a Wayland buffer, sharp at fractional scales. Besides the C runtime, it links only libxkbcommon.</p>
 <p class="example"><code>1.05 MB, one thread</code></p>
 </article>
 </div>
@@ -159,7 +159,7 @@
 <div class="install">
 <div>
 <h3>From source</h3>
-<div class="code" data-copy-label="Copy the install commands"><pre><code><span class="prompt">$ </span>git clone https://github.com/aliasproject/alias-calc
+<div class="code" data-copy-what="the install commands"><pre><code><span class="prompt">$ </span>git clone https://github.com/aliasproject/alias-calc
 <span class="prompt">$ </span>cd alias-calc
 <span class="prompt">$ </span>./install.sh            <span class="comment"># build, install into ~/.local</span></code></pre></div>
 <p class="small">It installs the binary, the screen reader library, a desktop entry ("Calculator" in your launcher) and the icons. To remove them, run <code>./install.sh uninstall</code> in the same folder.</p>
@@ -175,7 +175,7 @@
 <h3>Packages</h3>
 <div class="package">
 <p class="small">On aliasOS, it's in the aliasOS package repository:</p>
-<div class="code" data-copy-label="Copy the aliasOS install command"><pre><code><span class="prompt">$ </span>sudo pacman -S alias-calc</code></pre></div>
+<div class="code" data-copy-what="the aliasOS install command"><pre><code><span class="prompt">$ </span>sudo pacman -S alias-calc</code></pre></div>
 </div>
 <p class="small">Packages for other distributions aren't published yet. Until then, build from source.</p>
 </div>

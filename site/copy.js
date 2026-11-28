@@ -8,14 +8,21 @@ for (const block of document.querySelectorAll(".code")) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "copy";
-  button.textContent = "Copy";
-  button.setAttribute("aria-label", block.dataset.copyLabel || "Copy");
+  // The accessible name starts with the visible text, plus what it copies.
+  const what = block.dataset.copyWhat || "";
+  const show = (text, withWhat) => {
+    button.textContent = text;
+    button.setAttribute("aria-label", withWhat && what ? `${text} ${what}` : text);
+  };
+  show("Copy", true);
   let reset;
   const status = document.createElement("span");
   status.setAttribute("role", "status");
   status.className = "visually-hidden";
   button.addEventListener("click", async () => {
     clearTimeout(reset);
+    // Cleared first, so the same message is announced again.
+    status.textContent = "";
     // Copy the commands only: no prompts, no comments.
     const text = [...code.childNodes]
       .filter((n) => !(n.classList && (n.classList.contains("prompt") || n.classList.contains("comment"))))
@@ -28,14 +35,14 @@ for (const block of document.querySelectorAll(".code")) {
       await navigator.clipboard.writeText(text);
     } catch {
       // Stays until the next click, so there's time to read it.
-      button.textContent = "Select the text to copy";
+      show("Select the text to copy", false);
       status.textContent = "Couldn't copy. Select the text to copy it.";
       return;
     }
-    button.textContent = "Copied";
+    show("Copied", true);
     status.textContent = "Copied to the clipboard";
     reset = setTimeout(() => {
-      button.textContent = "Copy";
+      show("Copy", true);
       status.textContent = "";
     }, noticeMs);
   });
